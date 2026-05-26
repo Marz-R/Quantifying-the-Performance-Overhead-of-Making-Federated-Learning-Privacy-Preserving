@@ -59,7 +59,7 @@ class PeerNode (Node):
         self.barrier = threading.Barrier(len(self.peer_list) + 1) # +1 for self; TODO : update barrier when new peer joins or leaves
 
 
-    def tensor_to_base64(tensor: torch.Tensor) -> dict:
+    def tensor_to_base64(self, tensor: torch.Tensor) -> dict:
         buffer = io.BytesIO()
         torch.save(tensor.cpu(), buffer)
         return {
@@ -70,7 +70,7 @@ class PeerNode (Node):
         }
 
 
-    def base64_to_tensor(encoded: dict) -> torch.Tensor:
+    def base64_to_tensor(self, encoded: dict) -> torch.Tensor:
         raw = base64.b64decode(encoded["data"].encode("utf-8"))
         buffer = io.BytesIO(raw)
         return torch.load(buffer, map_location="cpu", weights_only=False)
@@ -186,7 +186,7 @@ class PeerNode (Node):
     def handle_weights_submission(self, node, data):
         print("Node " + self.id + ": Received weights from " + node.id)
 
-        message = json.loads(data)
+        message = json.loads(json.dumps(data))
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
         self.peers_weights[message["iteration"]] = {node.id: message["weights"]}
