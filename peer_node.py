@@ -3,11 +3,12 @@ import time
 import io
 import json
 import threading
+from typing import Optional
 from enum import Enum, auto
 from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
-from bulletin import Public_Bulletin
+from bulletin import Public_Bulletin, Observer
 from data_load import load_dataset
 
 
@@ -27,13 +28,12 @@ class RoundState(Enum):
     CONSENSUS = auto()
 
 
-class PeerNode (Node):
+class PeerNode (Node, Observer):
     def __init__(self, 
                  host: str, 
                  port: int, 
                  model: nn.Module, 
                  dataset: str,
-                 bulletin: Public_Bulletin,
                  id=None, # id is *string*, if input is int, parent class will convert it to string
                  callback=None, 
                  max_connections=0,):
@@ -43,12 +43,12 @@ class PeerNode (Node):
 
         self.model = model.to(device)
         self.dataset = load_dataset(dataset, BATCH_SIZE, VALID_SPLIT, download=False)[0] # only load train dataset
-        self.bulletin = bulletin
 
         self.iteration = 0
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=INIT_LR, weight_decay = 0.005, momentum = 0.9)
 
+        self.bulletin: Optional[Public_Bulletin] = None
         self.peer_list = {} # peer_id: {"host": str, "port": int}
         self.connected_peers = {}
 
@@ -92,10 +92,13 @@ class PeerNode (Node):
             print("Node " + self.id + ": Received message with mismatching sender_id: " + str(data["sender_id"]) + " from node " + node.id)
 
 
-    def register_to_network(self):
+    def register_to_network(self, bulletin):
         # Register self to the public bulletin
+        self.bulletin = bulletin
         self.bulletin.add_peer(self.id, {"host": self.host, "port": self.port})
         print("Node " + self.id + ": Registered to network.")
+
+        self.bulletin.subscribe(self)
 
         self.peer_list = self.bulletin.get_peer_list()
 
@@ -106,7 +109,35 @@ class PeerNode (Node):
             if peer_id != self.id:
                 self.connect_with_node(peer_info["host"], peer_info["port"])
                 self.connected_peers[peer_id] = peer_info
-                print("Node " + self.id + ": Connected to peer: " + peer_id)
+                print("Node " + self.id + ": Connected to Peer " + peer_id)
+
+    def _disconnect_with_peers(self):
+        for peer_id, peer_info in self.peer_list.items():
+            if peer_id != self.id:
+                self.disconnect_with_node(peer_info["host"], peer_info["port"])
+                del self.connected_peers[peer_id]
+                print("Node " + self.id + ": Disconnected to Peer " + peer_id)
+
+
+    def on_add_peer(self, peer_id: int, peer_info: dict):
+        if peer_id != self.id: 
+            self.peer_list[peer_id] = peer_info
+            print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " joined.")
+
+    def on_remove_peer(self, peer_id: int):
+        if peer_id in self.peer_list:
+            del self.peer_list[peer_id]
+            print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " left.")
+
+
+    def quit_network(self):
+        self.bulletin.remove_peer(self.id)
+        self.bulletin.unsubscribe(self)
+
+        self.bulletin = None
+        self._disconnect_with_peers()
+        self.peer_list = {}
+        self.peers_weights = {}
 
 
     def training(self):
