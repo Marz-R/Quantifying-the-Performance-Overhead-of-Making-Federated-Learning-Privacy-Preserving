@@ -56,7 +56,7 @@ class PeerNode (Node, Observer):
         self.peers_weights = {} # iteration: {peer_id: weights}
 
         self.lock = threading.Lock()
-        self.barrier = threading.Barrier(len(self.peer_list) + 1) # +1 for self; TODO : update barrier when new peer joins or leaves
+        self.barrier = threading.Barrier(1) # 1 for self
 
 
     def tensor_to_base64(self, tensor: torch.Tensor) -> dict:
@@ -101,6 +101,7 @@ class PeerNode (Node, Observer):
         self.bulletin.subscribe(self)
 
         self.peer_list = self.bulletin.get_peer_list()
+        self.barrier = threading.Barrier(len(self.peer_list) + 1)
 
     
     def connect_with_peers(self):
@@ -123,11 +124,13 @@ class PeerNode (Node, Observer):
         if peer_id != self.id: 
             self.peer_list[peer_id] = peer_info
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " joined.")
+            self.barrier = threading.Barrier(len(self.peer_list) + 1)
 
     def on_remove_peer(self, peer_id: int):
         if peer_id in self.peer_list:
             del self.peer_list[peer_id]
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " left.")
+            self.barrier = threading.Barrier(len(self.peer_list) + 1)
 
 
     def quit_network(self):
@@ -138,6 +141,7 @@ class PeerNode (Node, Observer):
         self._disconnect_with_peers()
         self.peer_list = {}
         self.peers_weights = {}
+        self.barrier = threading.Barrier(1)
 
 
     def training(self):
