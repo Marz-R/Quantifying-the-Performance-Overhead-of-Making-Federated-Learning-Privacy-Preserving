@@ -101,7 +101,7 @@ class PeerNode (Node, Observer):
         self.bulletin.subscribe(self)
 
         self.peer_list = self.bulletin.get_peer_list()
-        self.barrier = threading.Barrier(len(self.peer_list) + 1)
+        self.barrier = threading.Barrier(len(self.peer_list))
 
     
     def connect_with_peers(self):
@@ -124,13 +124,13 @@ class PeerNode (Node, Observer):
         if peer_id != self.id: 
             self.peer_list[peer_id] = peer_info
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " joined.")
-            self.barrier = threading.Barrier(len(self.peer_list) + 1)
+            self.barrier = threading.Barrier(len(self.peer_list))
 
     def on_remove_peer(self, peer_id: int):
         if peer_id in self.peer_list:
             del self.peer_list[peer_id]
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " left.")
-            self.barrier = threading.Barrier(len(self.peer_list) + 1)
+            self.barrier = threading.Barrier(len(self.peer_list))
 
 
     def quit_network(self):
@@ -186,7 +186,10 @@ class PeerNode (Node, Observer):
             self.submit_weights(cpu_state_dict)
 
             # wait for all peers to submit weights before next iteration
-            self.barrier.wait() 
+            print("Number of barrier parties: " + str(self.barrier.parties))
+            self.barrier.wait(timeout=60) 
+            print("Node " + self.id + ": Finished iteration " + str(i))
+            self.barrier.reset()
 
             if i>=3:
                 break # only 3 batches for testing
