@@ -155,12 +155,6 @@ class PeerNode (Node, Observer):
             self.iteration = i
             print("Node " + self.id + ": Training iteration " + str(i))
 
-            # update local model with aggregated weights from peers last iteration (if exist)
-            if i-1 in self.peers_weights:
-                print("Node " + self.id + ": Updating local model with weights from iteration " + str(i-1))
-                aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i-1])
-                self.model.load_state_dict(aggregated_weights)
-
             images = images.to(device)
             labels = labels.to(device)
                 
@@ -186,8 +180,14 @@ class PeerNode (Node, Observer):
             self.submit_weights(cpu_state_dict)
 
             # wait for all peers to submit weights before next iteration
-            print("Number of barrier parties: " + str(self.barrier.parties))
             self.barrier.wait(timeout=60) 
+
+            # update local model with aggregated weights from peers
+            if i in self.peers_weights:
+                print("Node " + self.id + ": Updating local model with weights from iteration " + str(i))
+                aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
+                self.model.load_state_dict(aggregated_weights)
+
             print("Node " + self.id + ": Finished iteration " + str(i))
             self.barrier.reset()
 
@@ -227,7 +227,10 @@ class PeerNode (Node, Observer):
         message = json.loads(json.dumps(data))
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
-        self.peers_weights[message["iteration"]] = {node.id: message["weights"]}
+        with self.lock:
+            self.peers_weights[message["iteration"]] = {node.id: message["weights"]}
+
+        self.barrier.wait(timeout=60)
 
 
     def aggregate_weights(self, local_state_dict, peers_weights):
@@ -237,7 +240,7 @@ class PeerNode (Node, Observer):
         aggregated_weights = {}
 
         for key in local_state_dict.keys():
-            aggregated_weights[key] = torch.stack([w[key].float() for w in all_weights]).mean(dim=0)
+            aggregated_weights[key] = torch.stack([w[key].float().to(device) for w in all_weights]).mean(dim=0)
         
         return aggregated_weights
         
