@@ -3,9 +3,12 @@ from peer_node import PeerNode
 from bulletin import Public_Bulletin
 from model_cnn import CNN
 
+# Hyperparameters
+NUM_EPOCHS = 50
+
 def test_peer_node():
     model = CNN(10, 1, 3*3)
-    bulletin = Public_Bulletin({}, 10, [])
+    bulletin = Public_Bulletin({}, NUM_EPOCHS, [])
 
     node1 = PeerNode(host="localhost", port=8000, model=model, dataset="MNIST", id=10)
     node2 = PeerNode(host="localhost", port=8001, model=model, dataset="MNIST", id=20)

@@ -8,12 +8,13 @@ from enum import Enum, auto
 from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from bulletin import Public_Bulletin, Observer
 from data_load import load_dataset
+from early_stopping import EarlyStopping
 
 
 # Hyperparameters
-NUM_EPOCHS = 20
 INIT_LR = 0.001
 BATCH_SIZE = 64
 VALID_SPLIT = 0.2
@@ -42,15 +43,15 @@ class PeerNode (Node, Observer):
         self.state = RoundState.IDLE
 
         self.model = model.to(device)
-        self.dataset = load_dataset(dataset, BATCH_SIZE, VALID_SPLIT, download=False)[0] # only load train dataset
+        self.train_data, self.val_data, _ = load_dataset(dataset, BATCH_SIZE, VALID_SPLIT, download=False)
 
         self.iteration = 0
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=INIT_LR, weight_decay = 0.005, momentum = 0.9)
 
         self.bulletin: Optional[Public_Bulletin] = None
         self.peer_list = {} # peer_id: {"host": str, "port": int}
         self.connected_peers = {}
+        self.max_epochs = 50
+        self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
 
         self.history = []
         self.peers_weights = {} # iteration: {peer_id: weights}
@@ -102,6 +103,7 @@ class PeerNode (Node, Observer):
 
         self.peer_list = self.bulletin.get_peer_list()
         self.barrier = threading.Barrier(len(self.peer_list))
+        self.max_epochs = self.bulletin.get_num_epochs()
 
     
     def connect_with_peers(self):
@@ -145,54 +147,113 @@ class PeerNode (Node, Observer):
 
 
     def training(self):
-        print("Node " + self.id + ": Starting training")
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=INIT_LR, weight_decay = 0.005, momentum = 0.9)
         
-        self.model.train()
+        print("\nNode " + self.id + ": Starting training")
 
-        # Load in the data in batches
-        for i, (images, labels) in enumerate(self.dataset):  
-            self.state = RoundState.TRAINING
-            self.iteration = i
-            print("Node " + self.id + ": Training iteration " + str(i))
+        for epoch in range(self.max_epochs):
 
-            images = images.to(device)
-            labels = labels.to(device)
+            self.model.train()
+            torch.autograd.set_detect_anomaly(True)
+            #total_train_loss = 0
+            #total_training_samples = 0
+            #train_loss_list = []
+
+            # training loop
+            for i, (images, labels) in enumerate(self.train_data):  
+                self.state = RoundState.TRAINING
+                self.iteration = i
+                print("Node " + self.id + ": Training iteration " + str(i))
+
+                images = images.to(device)
+                labels = labels.to(device)
                 
-            train_outputs = self.model(images)
-            train_loss = self.criterion(train_outputs, labels)
+                optimizer.zero_grad()
+                train_outputs = self.model(images)
+                train_loss = criterion(train_outputs, labels)
                 
-            self.optimizer.zero_grad()
-            train_loss.backward()
-            self.optimizer.step()
+                train_loss.backward()
+                optimizer.step()
 
-            # get model weights and save to history
-            state_dict = self.model.state_dict()
-            cpu_state_dict = {k: v.cpu() for k, v in state_dict.items()}
-            
-            snapshot = {
-                "iteration": i,
-                "timestamp": time.time(),
-                "weights":  cpu_state_dict
-            }
-            self.history.append(snapshot)
+                #sample_size = images.size(0)
+                #total_train_loss += train_loss.item() * sample_size
+                #total_training_samples += sample_size
 
-            # encode weights and submit to peers
-            self.submit_weights(cpu_state_dict)
+                # get model weights and save to history
+                state_dict = self.model.state_dict()
+                cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
+                
+                snapshot = {
+                    "iteration": i,
+                    "timestamp": time.time(),
+                    "weights":  cpu_state_dict
+                }
+                self.history.append(snapshot)
 
-            # wait for all peers to submit weights before next iteration
-            self.barrier.wait(timeout=60) 
+                # encode weights and submit to peers
+                self.submit_weights(cpu_state_dict)
 
-            # update local model with aggregated weights from peers
-            if i in self.peers_weights:
-                print("Node " + self.id + ": Updating local model with weights from iteration " + str(i))
-                aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
-                self.model.load_state_dict(aggregated_weights)
+                # wait for all peers to submit weights before next iteration
+                self.barrier.wait(timeout=60) 
 
-            print("Node " + self.id + ": Finished iteration " + str(i))
-            self.barrier.reset()
+                # update local model with aggregated weights from peers
+                if i in self.peers_weights:
+                    print("Node " + self.id + ": Updating local model with weights from iteration " + str(i))
+                    aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
+                    self.model.load_state_dict(aggregated_weights)
 
-            if i>=3:
-                break # only 3 batches for testing
+                print("Node " + self.id + ": Finished training iteration " + str(i))
+                self.barrier.reset()
+
+
+            total_val_losses = 0
+            total_val_samples = 0
+            val_loss_list = []
+
+            # validation loop
+            with torch.no_grad():
+
+                self.model.eval()
+
+                for i, (images, labels) in enumerate(self.val_data):
+                    images = images.to(device)
+                    labels = labels.to(device)
+
+                    val_outputs = self.model(images)
+                    val_loss = criterion(val_outputs, labels)
+
+                    sample_size = images.size(0)
+                    total_val_losses += val_loss.item() * sample_size
+                    total_val_samples += sample_size
+
+            #avg_train_loss = total_train_loss / total_training_samples if total_training_samples > 0 else 0
+            avg_val_loss = total_val_losses / total_val_samples if total_val_samples > 0 else 0
+
+            #train_loss_list.append(avg_train_loss)
+            val_loss_list.append(avg_val_loss)
+
+            # check for early stopping
+            if self.early_stopping.stop(avg_val_loss):
+                print("Node " + self.id + ": Early stopping triggered at epoch " + str(epoch))
+                break
+        
+        print("Node " + self.id + ": Finished training")
+        #self.plot_convergence(train_loss_list, val_loss_list)
+
+
+    def plot_convergence(self, train_loss, val_loss):
+        epochs = range(1, len(train_loss) + 1)
+        plt.figure(figsize=(10, 5))
+        plt.plot(epochs, train_loss, label='Training Loss')
+        plt.plot(epochs, val_loss, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training and Validation Loss over Epochs')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
 
 
     def submit_weights(self, weights, recipient_id=None, recipient_host=None):
@@ -228,7 +289,9 @@ class PeerNode (Node, Observer):
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
         with self.lock:
-            self.peers_weights[message["iteration"]] = {node.id: message["weights"]}
+            if message["iteration"] not in self.peers_weights.keys():
+                self.peers_weights[message["iteration"]] = {}
+            self.peers_weights[message["iteration"]][node.id] = message["weights"]
 
         self.barrier.wait(timeout=60)
 
@@ -240,7 +303,7 @@ class PeerNode (Node, Observer):
         aggregated_weights = {}
 
         for key in local_state_dict.keys():
-            aggregated_weights[key] = torch.stack([w[key].float().to(device) for w in all_weights]).mean(dim=0)
+            aggregated_weights[key] = torch.stack([w[key].float().to(device) for w in all_weights]).mean(dim=0).detach().clone()
         
         return aggregated_weights
         
@@ -248,8 +311,6 @@ class PeerNode (Node, Observer):
     def voting_consensus(self):
         print("Node " + self.id + ": Performing voting consensus")
 
-    def update_model(self):
-        print("Node " + self.id + ": Updating model")
 
     def get_connected_peers(self):
         return self.connected_peers

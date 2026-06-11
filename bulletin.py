@@ -14,8 +14,8 @@ class Observer(ABC):
 
 @dataclass
 class Public_Bulletin:
-    peer_list: dict[int, dict] # peer_id: {"host": str, "port": int}
-    num_epochs: int
+    peer_list: dict[int, dict]  # peer_id: {"host": str, "port": int}
+    num_epochs: int             # max number of epochs for training
     _observers: list[Observer]
 
     # pubsub management
