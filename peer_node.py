@@ -2,7 +2,7 @@ import base64
 import time
 import io
 import json
-import threading
+import queue
 from typing import Optional
 from enum import Enum, auto
 from p2pnetwork.node import Node
@@ -37,7 +37,8 @@ class PeerNode (Node, Observer):
                  dataset: str,
                  id=None, # id is *string*, if input is int, parent class will convert it to string
                  callback=None, 
-                 max_connections=0,):
+                 max_connections=0,
+                 debug=False):
         super(PeerNode, self).__init__(host, port, id, callback, max_connections)
         
         self.state = RoundState.IDLE
@@ -56,8 +57,10 @@ class PeerNode (Node, Observer):
         self.history = []
         self.peers_weights = {} # iteration: {peer_id: weights}
 
-        self.lock = threading.Lock()
-        self.barrier = threading.Barrier(1) # 1 for self
+        self.weights_queue = queue.Queue()
+        self.ready_queue = queue.Queue()
+
+        self.debug = debug
 
 
     def tensor_to_base64(self, tensor: torch.Tensor) -> dict:
@@ -83,6 +86,10 @@ class PeerNode (Node, Observer):
             if data["type"] == "weights_submission":
                 self.handle_weights_submission(node, data)
 
+            elif data["type"] == "iteration_ready":
+                print("Node " + self.id + ": Received iteration ready from node " + str(data["sender_id"]) + " for iteration " + str(data["iteration"]))
+                self.ready_queue.put(data)
+
             elif data["type"] == "test_message":
                 print("Node " + self.id + ": Received test message: " + data["message"] + " from node " + str(data["sender_id"]) + " to node " + str(self.id))
             
@@ -97,13 +104,11 @@ class PeerNode (Node, Observer):
         # Register self to the public bulletin
         self.bulletin = bulletin
         self.bulletin.add_peer(self.id, {"host": self.host, "port": self.port})
-        print("Node " + self.id + ": Registered to network.")
-
         self.bulletin.subscribe(self)
-
         self.peer_list = self.bulletin.get_peer_list()
-        self.barrier = threading.Barrier(len(self.peer_list))
         self.max_epochs = self.bulletin.get_num_epochs()
+
+        print("Node " + self.id + ": Registered to network.")
 
     
     def connect_with_peers(self):
@@ -126,13 +131,11 @@ class PeerNode (Node, Observer):
         if peer_id != self.id: 
             self.peer_list[peer_id] = peer_info
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " joined.")
-            self.barrier = threading.Barrier(len(self.peer_list))
 
     def on_remove_peer(self, peer_id: int):
         if peer_id in self.peer_list:
             del self.peer_list[peer_id]
             print("Node " + self.id + ": Updated peer list: Peer " + peer_id + " left.")
-            self.barrier = threading.Barrier(len(self.peer_list))
 
 
     def quit_network(self):
@@ -143,7 +146,6 @@ class PeerNode (Node, Observer):
         self._disconnect_with_peers()
         self.peer_list = {}
         self.peers_weights = {}
-        self.barrier = threading.Barrier(1)
 
 
     def training(self):
@@ -153,12 +155,13 @@ class PeerNode (Node, Observer):
         print("\nNode " + self.id + ": Starting training")
 
         for epoch in range(self.max_epochs):
+            print("\nNode " + self.id + ": Starting epoch " + str(epoch))
 
             self.model.train()
-            torch.autograd.set_detect_anomaly(True)
-            #total_train_loss = 0
-            #total_training_samples = 0
-            #train_loss_list = []
+            #torch.autograd.set_detect_anomaly(True)
+            total_train_loss = 0
+            total_training_samples = 0
+            train_loss_list = []
 
             # training loop
             for i, (images, labels) in enumerate(self.train_data):  
@@ -176,9 +179,9 @@ class PeerNode (Node, Observer):
                 train_loss.backward()
                 optimizer.step()
 
-                #sample_size = images.size(0)
-                #total_train_loss += train_loss.item() * sample_size
-                #total_training_samples += sample_size
+                sample_size = images.size(0)
+                total_train_loss += train_loss.item() * sample_size
+                total_training_samples += sample_size
 
                 # get model weights and save to history
                 state_dict = self.model.state_dict()
@@ -194,8 +197,20 @@ class PeerNode (Node, Observer):
                 # encode weights and submit to peers
                 self.submit_weights(cpu_state_dict)
 
-                # wait for all peers to submit weights before next iteration
-                self.barrier.wait(timeout=60) 
+                # collect weights from peers for current iteration before aggregation
+                expected_weights_count = len(self.peer_list) - 1 # excluding self
+                self.peers_weights[i] = {}
+
+                while len(self.peers_weights[i]) < expected_weights_count:
+                    try:
+                        sender_id, message = self.weights_queue.get(timeout=60)
+                        if message["iteration"] == i:
+                            self.peers_weights[i][sender_id] = message["weights"]
+                        elif message["iteration"] > i:
+                            self.weights_queue.put((sender_id, message)) # Re-queue the message from furture iteration
+                    except queue.Empty:
+                        print("Node " + self.id + ": Timeout while waiting for weights from peers for iteration " + str(i))
+                        break
 
                 # update local model with aggregated weights from peers
                 if i in self.peers_weights:
@@ -204,7 +219,8 @@ class PeerNode (Node, Observer):
                     self.model.load_state_dict(aggregated_weights)
 
                 print("Node " + self.id + ": Finished training iteration " + str(i))
-                self.barrier.reset()
+
+                self.iteration_ready(i)
 
 
             total_val_losses = 0
@@ -239,7 +255,7 @@ class PeerNode (Node, Observer):
                 break
         
         print("Node " + self.id + ": Finished training")
-        #self.plot_convergence(train_loss_list, val_loss_list)
+        self.plot_convergence(train_loss_list, val_loss_list)
 
 
     def plot_convergence(self, train_loss, val_loss):
@@ -266,7 +282,7 @@ class PeerNode (Node, Observer):
             "sender_id": self.id,
             "timestamp": time.time(),
             "iteration": self.iteration,
-            "batch_size": BATCH_SIZE,
+        "batch_size": BATCH_SIZE,
             "weights":  encoded_state_dict
         }
 
@@ -288,12 +304,7 @@ class PeerNode (Node, Observer):
         message = json.loads(json.dumps(data))
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
-        with self.lock:
-            if message["iteration"] not in self.peers_weights.keys():
-                self.peers_weights[message["iteration"]] = {}
-            self.peers_weights[message["iteration"]][node.id] = message["weights"]
-
-        self.barrier.wait(timeout=60)
+        self.weights_queue.put((node.id, message))
 
 
     def aggregate_weights(self, local_state_dict, peers_weights):
@@ -307,6 +318,34 @@ class PeerNode (Node, Observer):
         
         return aggregated_weights
         
+
+    def iteration_ready(self, iteration):
+        self.state = RoundState.COMMUNICATION
+
+        message = {
+            "type": "iteration_ready",
+            "sender_id": self.id,
+            "timestamp": time.time(),
+            "iteration": iteration
+        }
+
+        for node in self.nodes_outbound:
+            self.send_to_node(node, message)
+        
+        expected_ready_count = len(self.peer_list) - 1
+        ready_peers = []
+
+        while len(ready_peers) < expected_ready_count:
+            try:
+                message = self.ready_queue.get(timeout=60)
+                if message["iteration"] == iteration:
+                    ready_peers.append(message["sender_id"])
+                else:
+                    self.ready_queue.put(message) # put it back if it's for a different iteration
+            except queue.Empty:
+                print("Node " + self.id + ": Timeout while waiting for ready signals for iteration " + str(iteration))
+                break
+
 
     def voting_consensus(self):
         print("Node " + self.id + ": Performing voting consensus")
