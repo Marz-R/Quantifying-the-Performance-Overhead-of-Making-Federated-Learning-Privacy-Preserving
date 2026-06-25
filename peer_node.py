@@ -5,6 +5,7 @@ import json
 import queue
 from typing import Optional
 from enum import Enum, auto
+from tqdm import tqdm
 from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
@@ -159,17 +160,21 @@ class PeerNode (Node, Observer):
         
         self.print_debug_messages("Starting training")
 
-        for epoch in range(self.max_epochs):
-            self.print_debug_messages("Starting epoch " + str(epoch))
+        epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress")
+
+        for epoch in epoch_bar:
+            self.print_debug_messages("Starting epoch " + str(epoch+1))
 
             self.model.train()
             #torch.autograd.set_detect_anomaly(True)
-            total_train_loss = 0
+            total_train_loss = 0.0
             total_training_samples = 0
             train_loss_list = []
 
+            train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
+
             # training loop
-            for i, (images, labels) in enumerate(self.train_data):  
+            for i, (images, labels) in enumerate(train_bar):  
                 self.state = RoundState.TRAINING
                 self.iteration = i
                 self.print_debug_messages("Training iteration " + str(i))
@@ -228,16 +233,18 @@ class PeerNode (Node, Observer):
                 self.iteration_ready(i)
 
 
-            total_val_losses = 0
+            total_val_losses = 0.0
             total_val_samples = 0
             val_loss_list = []
+
+            val_bar = tqdm(self.val_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [validation]")
 
             # validation loop
             with torch.no_grad():
 
                 self.model.eval()
 
-                for i, (images, labels) in enumerate(self.val_data):
+                for i, (images, labels) in enumerate(val_bar):
                     images = images.to(device)
                     labels = labels.to(device)
 
@@ -248,11 +255,18 @@ class PeerNode (Node, Observer):
                     total_val_losses += val_loss.item() * sample_size
                     total_val_samples += sample_size
 
-            #avg_train_loss = total_train_loss / total_training_samples if total_training_samples > 0 else 0
+            avg_train_loss = total_train_loss / total_training_samples if total_training_samples > 0 else 0
             avg_val_loss = total_val_losses / total_val_samples if total_val_samples > 0 else 0
 
-            #train_loss_list.append(avg_train_loss)
+            train_loss_list.append(avg_train_loss)
             val_loss_list.append(avg_val_loss)
+
+            tqdm.write(
+                f"Peer {self.id} --- "
+                f"Epoch {epoch+1}/{self.max_epochs} | "
+                f"train_loss={avg_train_loss:.4f} | "
+                f"val_loss={avg_val_loss:.4f}"
+            )
 
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
