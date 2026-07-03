@@ -10,14 +10,14 @@ from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from bulletin import Public_Bulletin, Observer
+from bulletin_client import BulletinClient
 from data_load import load_dataset
 from early_stopping import EarlyStopping
 
 
 # Hyperparameters
 INIT_LR = 0.001
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 VALID_SPLIT = 0.2
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -30,7 +30,7 @@ class RoundState(Enum):
     CONSENSUS = auto()
 
 
-class PeerNode (Node, Observer):
+class PeerNode (Node):
     def __init__(self, 
                  host: str, 
                  port: int, 
@@ -49,9 +49,12 @@ class PeerNode (Node, Observer):
 
         self.iteration = 0
 
-        self.bulletin: Optional[Public_Bulletin] = None
+        self.bulletin: Optional[BulletinClient] = None
+
         self.peer_list = {} # peer_id: {"host": str, "port": int}
+        self.last_seen_version = 0
         self.connected_peers = {}
+
         self.max_epochs = 50
         self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
 
@@ -110,8 +113,11 @@ class PeerNode (Node, Observer):
         # Register self to the public bulletin
         self.bulletin = bulletin
         self.bulletin.add_peer(self.id, {"host": self.host, "port": self.port})
-        self.bulletin.subscribe(self)
-        self.peer_list = self.bulletin.get_peer_list()
+
+        peer_list_response = self.bulletin.get_peer_list()
+        self.peer_list = peer_list_response["peer_list"]
+        self.last_seen_version = peer_list_response["version"]
+
         self.max_epochs = self.bulletin.get_num_epochs()
 
         self.print_debug_messages("Registered to network.")
@@ -120,12 +126,29 @@ class PeerNode (Node, Observer):
     def connect_with_peers(self):
         # Connect to all peers in the peer list
         for peer_id, peer_info in self.peer_list.items():
-            if peer_id != self.id:
+            if peer_id != self.id and peer_id not in self.connected_peers:
                 self.connect_with_node(peer_info["host"], peer_info["port"])
                 self.connected_peers[peer_id] = peer_info
                 self.print_debug_messages("Connected to Peer " + peer_id)
 
-    def _disconnect_with_peers(self):
+
+    def update_peer_list(self):
+        response = self.bulletin.update_peer_list(self.last_seen_version)
+
+        if response["peer_list"] is not None:
+            self.peer_list = response["peer_list"]
+            self.last_seen_version = response["version"]
+
+            for peer_id in list(self.connected_peers.keys()):
+                if peer_id not in self.peer_list:
+                    self.disconnect_with_node(self.connected_peers[peer_id]["host"], self.connected_peers[peer_id]["port"])
+                    del self.connected_peers[peer_id]
+                    self.print_debug_messages("Peer " + peer_id + " left, disconnected.")
+
+            self.connect_with_peers()
+
+
+    def _disconnect_all_peers(self):
         for peer_id, peer_info in self.peer_list.items():
             if peer_id != self.id:
                 self.disconnect_with_node(peer_info["host"], peer_info["port"])
@@ -133,23 +156,11 @@ class PeerNode (Node, Observer):
                 self.print_debug_messages("Disconnected to Peer " + peer_id)
 
 
-    def on_add_peer(self, peer_id: int, peer_info: dict):
-        if peer_id != self.id: 
-            self.peer_list[peer_id] = peer_info
-            self.print_debug_messages("Updated peer list: Peer " + peer_id + " joined.")
-
-    def on_remove_peer(self, peer_id: int):
-        if peer_id in self.peer_list:
-            del self.peer_list[peer_id]
-            self.print_debug_messages("Updated peer list: Peer " + peer_id + " left.")
-
-
     def quit_network(self):
         self.bulletin.remove_peer(self.id)
-        self.bulletin.unsubscribe(self)
 
         self.bulletin = None
-        self._disconnect_with_peers()
+        self._disconnect_all_peers()
         self.peer_list = {}
         self.peers_weights = {}
 
@@ -163,6 +174,8 @@ class PeerNode (Node, Observer):
         epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress")
 
         for epoch in epoch_bar:
+            self.update_peer_list()
+
             self.print_debug_messages("Starting epoch " + str(epoch+1))
 
             self.model.train()
@@ -301,7 +314,7 @@ class PeerNode (Node, Observer):
             "sender_id": self.id,
             "timestamp": time.time(),
             "iteration": self.iteration,
-        "batch_size": BATCH_SIZE,
+            "batch_size": BATCH_SIZE,
             "weights":  encoded_state_dict
         }
 
