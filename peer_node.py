@@ -293,7 +293,7 @@ class PeerNode (Node):
 
 
     def plot_convergence(self, train_loss, val_loss):
-        epochs = range(1, len(train_loss) + 1)
+        epochs = range(1, self.max_epochs + 1)
         plt.figure(figsize=(10, 5))
         plt.plot(epochs, train_loss, label='Training Loss')
         plt.plot(epochs, val_loss, label='Validation Loss')

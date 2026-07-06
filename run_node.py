@@ -18,11 +18,11 @@ if __name__ == "__main__":
     bulletin = BulletinClient(args.bulletin_ip)  # bulletin server's IP, e.g. http://192.168.1.100:5000
 
     model = CNN(10, 1, 3*3)
-    bulletin = BulletinClient("")  # bulletin server's IP, e.g. http://192.168.1.100:5000
-
     node = PeerNode(host=host, port=port, model=model, dataset="MNIST", id=node_id, sync_every=10)
+
     node.start()
     node.register_to_network(bulletin)
     node.connect_with_peers()
     node.training()
-    node.stop
+    node.quit_network()
+    node.stop()
