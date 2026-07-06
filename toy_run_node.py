@@ -11,7 +11,7 @@ if __name__ == "__main__":
  
     bulletin = BulletinClient(bulletin_url)
     model = ToyCNN()
-    node = PeerNode(host=host, port=port, model=model, dataset="toy", id=node_id)
+    node = PeerNode(host=host, port=port, model=model, dataset="toy", id=node_id, sync_every=10)
  
     node.start()
     node.register_to_network(bulletin)

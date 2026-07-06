@@ -1,7 +1,6 @@
 import base64
 import time
 import io
-import json
 import queue
 from typing import Optional
 from enum import Enum, auto
@@ -37,6 +36,7 @@ class PeerNode (Node):
                  model: nn.Module, 
                  dataset: str,
                  id=None, # id is *string*, if input is int, parent class will convert it to string
+                 sync_every=1,
                  callback=None, 
                  max_connections=0,
                  debug_message=False):
@@ -48,6 +48,7 @@ class PeerNode (Node):
         self.train_data, self.val_data, _ = load_dataset(dataset, BATCH_SIZE, VALID_SPLIT, download=False)
 
         self.iteration = 0
+        self.sync_every = sync_every # default 1
 
         self.bulletin: Optional[BulletinClient] = None
 
@@ -58,7 +59,6 @@ class PeerNode (Node):
         self.max_epochs = 50
         self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
 
-        self.history = []
         self.peers_weights = {} # iteration: {peer_id: weights}
 
         self.weights_queue = queue.Queue()
@@ -185,6 +185,7 @@ class PeerNode (Node):
             train_loss_list = []
 
             train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
+            num_batches = len(self.train_data)
 
             # training loop
             for i, (images, labels) in enumerate(train_bar):  
@@ -206,16 +207,16 @@ class PeerNode (Node):
                 total_train_loss += train_loss.item() * sample_size
                 total_training_samples += sample_size
 
+                # (always sync on the final batch of the epoch so peers end each epoch aligned)
+                is_sync_iteration = ((i + 1) % self.sync_every == 0) or (i == num_batches - 1)
+
+                if not is_sync_iteration:
+                    self.print_debug_messages("Skipping sync for iteration " + str(i))
+                    continue
+
                 # get model weights and save to history
                 state_dict = self.model.state_dict()
                 cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
-                
-                snapshot = {
-                    "iteration": i,
-                    "timestamp": time.time(),
-                    "weights":  cpu_state_dict
-                }
-                self.history.append(snapshot)
 
                 # encode weights and submit to peers
                 self.submit_weights(cpu_state_dict)
@@ -240,6 +241,7 @@ class PeerNode (Node):
                     self.print_debug_messages("Updating local model with weights from iteration " + str(i))
                     aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
                     self.model.load_state_dict(aggregated_weights)
+                    del self.peers_weights[i] # clear the weights for this iteration after aggregation
 
                 self.print_debug_messages("Finished training iteration " + str(i))
 
@@ -331,9 +333,10 @@ class PeerNode (Node):
 
 
     def handle_weights_submission(self, node, data):
-        self.print_debug_messages("eceived weights from " + node.id)
+        self.print_debug_messages("Received weights from " + node.id)
 
-        message = json.loads(json.dumps(data))
+        #message = json.loads(json.dumps(data))
+        message = data
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
         self.weights_queue.put((node.id, message))
