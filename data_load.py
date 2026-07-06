@@ -12,8 +12,31 @@ def load_dataset(dataset_name, BATCH_SIZE, VALID_SPLIT, download):
 		return load_cifar100(BATCH_SIZE, VALID_SPLIT, download)
 	elif dataset_name == "MNIST":
 		return load_mnist(BATCH_SIZE, VALID_SPLIT, download)
+	elif dataset_name == "toy":
+		return load_toy_mnist()
 	else:
 		raise ValueError("Unsupported dataset")
+
+
+def load_toy_mnist(batch_size=32, val_split=0.2, num_samples=1000):
+
+	print("Loading toy dataset...")
+
+	transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.1307,), (0.3081,))])
+ 
+	full_dataset = torchvision.datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+ 
+	subset = torch.utils.data.Subset(full_dataset, indices=range(num_samples))
+ 
+	val_size   = int(num_samples * val_split)
+	train_size = num_samples - val_size
+	train_data, val_data = random_split(subset, [train_size, val_size])
+ 
+	train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True)
+	val_loader   = torch.utils.data.DataLoader(val_data,   batch_size=batch_size, shuffle=False)
+	test_loader = None
+ 
+	return train_loader, val_loader, test_loader
 
 
 def load_cifar10(BATCH_SIZE, VALID_SPLIT, download):
