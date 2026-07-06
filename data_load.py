@@ -24,7 +24,7 @@ def load_toy_mnist(batch_size=32, val_split=0.2, num_samples=1000):
 
 	transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.1307,), (0.3081,))])
  
-	full_dataset = torchvision.datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+	full_dataset = torchvision.datasets.MNIST(root="./data", train=True, download=False, transform=transform)
  
 	subset = torch.utils.data.Subset(full_dataset, indices=range(num_samples))
  

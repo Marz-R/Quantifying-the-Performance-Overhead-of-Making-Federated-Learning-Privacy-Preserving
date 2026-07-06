@@ -5,7 +5,7 @@ from bulletin import Public_Bulletin
 MAX_EPOCH = 50
 
 app = Flask(__name__)
-bulletin = Public_Bulletin({}, num_epochs=MAX_EPOCH, observers=[])
+bulletin = Public_Bulletin({}, num_epochs=MAX_EPOCH)
 
 
 @app.route("/add_peer", methods=["POST"])
@@ -23,7 +23,7 @@ def remove_peer():
 
 @app.route("/get_peer_list", methods=["GET"])
 def get_peer_list():
-    return jsonify(bulletin.get_peer_list())
+    return jsonify({"version": bulletin.version, "peer_list": bulletin.get_peer_list()})
 
 
 @app.route("/peer_list/since/<int:version>", methods=["GET"])
@@ -40,4 +40,4 @@ def get_num_epochs():
 
 
 if __name__ == "__main__":
-    serve(app, host="0.0.0.0", port=5000)
+    serve(app, host="0.0.0.0", port=8000)
