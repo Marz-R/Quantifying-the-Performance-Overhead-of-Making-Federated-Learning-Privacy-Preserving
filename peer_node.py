@@ -139,21 +139,25 @@ class PeerNode (Node):
             self.peer_list = response["peer_list"]
             self.last_seen_version = response["version"]
 
+            outdated_peers = []
+
             for peer_id in list(self.connected_peers.keys()):
                 if peer_id not in self.peer_list:
-                    self.disconnect_with_node(self.connected_peers[peer_id]["host"], self.connected_peers[peer_id]["port"])
-                    del self.connected_peers[peer_id]
-                    self.print_debug_messages("Peer " + peer_id + " left, disconnected.")
+                    outdated_peers.append(peer_id)
+            
+            for n in self.nodes_outbound: 
+                if n.id in outdated_peers:
+                    self.disconnect_with_node(n)
+                    del self.connected_peers[n.id]
+                    self.print_debug_messages("Peer " + n.id + " left, disconnected.")
 
             self.connect_with_peers()
-
+        
 
     def _disconnect_all_peers(self):
-        for peer_id, peer_info in self.peer_list.items():
-            if peer_id != self.id:
-                self.disconnect_with_node(peer_info["host"], peer_info["port"])
-                del self.connected_peers[peer_id]
-                self.print_debug_messages("Disconnected to Peer " + peer_id)
+        for node in self.nodes_outbound:
+            self.disconnect_with_node(node)
+            del self.connected_peers[node.id]
 
 
     def quit_network(self):
@@ -170,6 +174,8 @@ class PeerNode (Node):
         optimizer = torch.optim.SGD(self.model.parameters(), lr=INIT_LR, weight_decay = 0.005, momentum = 0.9)
         
         self.print_debug_messages("Starting training")
+        train_loss_list = []
+        val_loss_list = []
 
         epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress")
 
@@ -181,8 +187,7 @@ class PeerNode (Node):
             self.model.train()
             #torch.autograd.set_detect_anomaly(True)
             total_train_loss = 0.0
-            total_training_samples = 0
-            train_loss_list = []
+            total_training_samples = 0            
 
             train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
             num_batches = len(self.train_data)
@@ -227,7 +232,7 @@ class PeerNode (Node):
 
                 while len(self.peers_weights[i]) < expected_weights_count:
                     try:
-                        sender_id, message = self.weights_queue.get(timeout=60)
+                        sender_id, message = self.weights_queue.get(timeout=10)
                         if message["iteration"] == i:
                             self.peers_weights[i][sender_id] = message["weights"]
                         elif message["iteration"] > i:
@@ -250,7 +255,6 @@ class PeerNode (Node):
 
             total_val_losses = 0.0
             total_val_samples = 0
-            val_loss_list = []
 
             val_bar = tqdm(self.val_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [validation]")
 
@@ -335,7 +339,6 @@ class PeerNode (Node):
     def handle_weights_submission(self, node, data):
         self.print_debug_messages("Received weights from " + node.id)
 
-        #message = json.loads(json.dumps(data))
         message = data
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
@@ -372,7 +375,7 @@ class PeerNode (Node):
 
         while len(ready_peers) < expected_ready_count:
             try:
-                message = self.ready_queue.get(timeout=60)
+                message = self.ready_queue.get(timeout=10)
                 if message["iteration"] == iteration:
                     ready_peers.append(message["sender_id"])
                 else:
