@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from waitress import serve
 from bulletin import Public_Bulletin
 
-MAX_EPOCH = 50
+MAX_EPOCH = 100
 
 app = Flask(__name__)
 bulletin = Public_Bulletin({}, num_epochs=MAX_EPOCH)

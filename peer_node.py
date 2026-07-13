@@ -5,18 +5,18 @@ import queue
 from typing import Optional
 from enum import Enum, auto
 from tqdm import tqdm
+from time import time
 from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
+from torchmetrics.classification import F1Score
 from bulletin_client import BulletinClient
 from data_load import load_dataset
 from early_stopping import EarlyStopping
+from measurements.exp_logger import ExperimentLogger
 
 
 # Hyperparameters
-INIT_LR = 0.001
-BATCH_SIZE = 128
 VALID_SPLIT = 0.2
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,20 +35,23 @@ class PeerNode (Node):
                  port: int, 
                  model: nn.Module, 
                  dataset: str,
+                 exp_logger: ExperimentLogger,
                  id=None, # id is *string*, if input is int, parent class will convert it to string
-                 sync_every=1,
+                 batch_size=128,
+                 sync_every=5,
                  callback=None, 
-                 max_connections=0,
+                 max_connections=0, # 0 means unlimited connections
                  debug_message=False):
         super(PeerNode, self).__init__(host, port, id, callback, max_connections)
         
         self.state = RoundState.IDLE
 
+        self.batch_size = batch_size
         self.model = model.to(device)
-        self.train_data, self.val_data, _ = load_dataset(dataset, BATCH_SIZE, VALID_SPLIT, download=False)
+        self.train_data, self.val_data, _ = load_dataset(dataset, self.batch_size, VALID_SPLIT, download=False)
 
         self.iteration = 0
-        self.sync_every = sync_every # default 1
+        self.sync_every = sync_every # default 5
 
         self.bulletin: Optional[BulletinClient] = None
 
@@ -56,13 +59,15 @@ class PeerNode (Node):
         self.last_seen_version = 0
         self.connected_peers = {}
 
-        self.max_epochs = 50
+        self.max_epochs = None
         self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
 
         self.peers_weights = {} # iteration: {peer_id: weights}
 
         self.weights_queue = queue.Queue()
         self.ready_queue = queue.Queue()
+
+        self.logger = exp_logger
 
         self.debug_message = debug_message
 
@@ -90,6 +95,8 @@ class PeerNode (Node):
 
 
     def node_message(self, node, data):
+        self.logger.record_received(data)
+
         if node.id == str(data["sender_id"]): # is it nessary to check sender_id?
 
             if data["type"] == "weights_submission":
@@ -171,11 +178,11 @@ class PeerNode (Node):
 
     def training(self):
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(self.model.parameters(), lr=INIT_LR, weight_decay = 0.005, momentum = 0.9)
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, weight_decay = 0.005, momentum = 0.9)
         
         self.print_debug_messages("Starting training")
-        train_loss_list = []
-        val_loss_list = []
+        
+        f1 = F1Score(task='multiclass', num_classes=10, average='macro').to(device)
 
         epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress")
 
@@ -190,6 +197,7 @@ class PeerNode (Node):
             total_training_samples = 0            
 
             train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
+            epoch_start_time = time()
             num_batches = len(self.train_data)
 
             # training loop
@@ -274,40 +282,36 @@ class PeerNode (Node):
                     total_val_losses += val_loss.item() * sample_size
                     total_val_samples += sample_size
 
+                    f1.update(val_outputs, labels)
+
+            epoch_end_time = time()
+            epoch_duration = epoch_end_time - epoch_start_time
+            itr_per_sec = total_training_samples / epoch_duration if epoch_duration > 0 else 0
+
             avg_train_loss = total_train_loss / total_training_samples if total_training_samples > 0 else 0
             avg_val_loss = total_val_losses / total_val_samples if total_val_samples > 0 else 0
-
-            train_loss_list.append(avg_train_loss)
-            val_loss_list.append(avg_val_loss)
+            val_f1 = f1.compute()
+            f1.reset()
 
             tqdm.write(
                 f"Peer {self.id} --- "
                 f"Epoch {epoch+1}/{self.max_epochs} | "
                 f"train_loss={avg_train_loss:.4f} | "
-                f"val_loss={avg_val_loss:.4f}"
+                f"val_loss={avg_val_loss:.4f} | "
+                f"val_f1={val_f1:.4f}"
             )
 
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
+                self.logger.log_performance(epoch+1, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
                 self.print_debug_messages("Early stopping triggered at epoch " + str(epoch))
                 break
-        
+            
+            self.logger.log_performance(epoch+1, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, False)
+            self.logger.log_communication(epoch+1)
+            self.logger.log_computation(epoch+1)
+
         self.print_debug_messages("Finished training")
-        self.plot_convergence(train_loss_list, val_loss_list)
-
-
-    def plot_convergence(self, train_loss, val_loss):
-        epochs = range(1, self.max_epochs + 1)
-        plt.figure(figsize=(10, 5))
-        plt.plot(epochs, train_loss, label='Training Loss')
-        plt.plot(epochs, val_loss, label='Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Training and Validation Loss over Epochs')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.show()
 
 
     def submit_weights(self, weights, recipient_id=None, recipient_host=None):
@@ -320,7 +324,7 @@ class PeerNode (Node):
             "sender_id": self.id,
             "timestamp": time.time(),
             "iteration": self.iteration,
-            "batch_size": BATCH_SIZE,
+            "batch_size": self.batch_size,
             "weights":  encoded_state_dict
         }
 
@@ -328,10 +332,12 @@ class PeerNode (Node):
         for node in self.nodes_outbound:
             if recipient_id is None and recipient_host is None:
                 self.send_to_node(node, message)
+                self.logger.record_sent(message)
                 self.print_debug_messages("Submitted weights to node " + node.id)
             else:
                 if node.id == recipient_id and node.host == recipient_host:
                     self.send_to_node(node, message)
+                    self.logger.record_sent(message)
                     self.print_debug_messages("Submitted weights to node " + node.id)
                     break
 
@@ -369,6 +375,7 @@ class PeerNode (Node):
 
         for node in self.nodes_outbound:
             self.send_to_node(node, message)
+            self.logger.record_sent(message)
         
         expected_ready_count = len(self.peer_list) - 1
         ready_peers = []

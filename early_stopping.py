@@ -1,6 +1,6 @@
 
 class EarlyStopping:
-    def __init__(self, patience=10, min_delta=1e-4):
+    def __init__(self, patience=5, min_delta=0.001):
         self.patience = patience
         self.min_delta = min_delta
         self.best_loss = float('inf')

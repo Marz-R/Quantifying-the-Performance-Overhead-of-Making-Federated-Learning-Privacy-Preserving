@@ -17,4 +17,5 @@ if __name__ == "__main__":
     node.register_to_network(bulletin)
     node.connect_with_peers()
     node.training()
+    node.quit_network()
     node.stop()
