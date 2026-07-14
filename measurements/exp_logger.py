@@ -6,13 +6,13 @@ import psutil
 import GPUtil
 
 class ExperimentLogger:
-    def __init__(self, peer_id, model, dataset, batch_size, num_nodes, num_epochs, privacy_protocol, output_path='./measurements'):
+    def __init__(self, peer_id, model, dataset, privacy_protocol, output_path='./measurements'):
         self.peer_id = peer_id
         
         self.csv_path = output_path
-        self.csv_name_perf = peer_id + "_performance_data_" + privacy_protocol + "_" + model + "model_" + dataset + "_batch" + str(batch_size) + "_epochs" + str(num_epochs) + "_" + str(num_nodes) + "nodes.csv"
-        self.csv_name_comp = peer_id + "_computation_data_" + privacy_protocol + "_" + model + "model_" + dataset + "_batch" + str(batch_size) + "_epochs" + str(num_epochs) + "_" + str(num_nodes) + "nodes.csv"
-        self.csv_name_comm = peer_id + "_communication_data_" + privacy_protocol + "_" + model + "model_" + dataset + "_batch" + str(batch_size) + "_epochs" + str(num_epochs) + "_" + str(num_nodes) + "nodes.csv"
+        self.csv_name_perf = peer_id + "_performance_data_" + privacy_protocol + "_" + model + "model_" + dataset + ".csv"
+        self.csv_name_comp = peer_id + "_computation_data_" + privacy_protocol + "_" + model + "model_" + dataset + ".csv"
+        self.csv_name_comm = peer_id + "_communication_data_" + privacy_protocol + "_" + model + "model_" + dataset + ".csv"
         
         self.bytes_sent = 0
         self.bytes_received = 0
@@ -24,10 +24,13 @@ class ExperimentLogger:
         self.gpu_usage = {}
 
 
-    def log_performance(self, epoch, train_loss, val_loss, val_f1, itr_per_sec, convergence: bool):
+    def log_performance(self, epoch, max_epoch, num_peers, batch_size, train_loss, val_loss, val_f1, itr_per_sec, convergence: bool):
         row = {
             "peer_id": self.peer_id,
-            "epoch": epoch,
+            "epoch": epoch, 
+            "max_epoch": max_epoch,
+            "num_peers": num_peers,
+            "batch_size": batch_size,
             "train_losses": train_loss,
             "validation_losses": val_loss,
             "validation_f1_scores": val_f1,
@@ -40,10 +43,13 @@ class ExperimentLogger:
         df.to_csv(path, index=False, mode='a', header=not os.path.exists(path))
 
 
-    def log_computation(self, epoch): # log after an epoch
+    def log_computation(self, epoch, max_epoch, num_peers, batch_size): # log after an epoch
         row = {
             "peer_id": self.peer_id,
             "epoch": epoch,
+            "max_epoch": max_epoch,
+            "num_peers": num_peers,
+            "batch_size": batch_size,
             "cpu_mean": np.mean(self.cpu_usage),
             "cpu_max": np.max(self.cpu_usage),
             "memory_mean": np.mean(self.memory_usage),
@@ -63,10 +69,13 @@ class ExperimentLogger:
         df.tocsv(path, index=False, mode='a', header=not os.path.exists(path))
         
 
-    def log_communication(self, epoch): # log communication after finishing an epoch
+    def log_communication(self, epoch, max_epoch, num_peers, batch_size): # log communication after finishing an epoch
         row = {
             "peer_id": self.peer_id,
             "epoch": epoch,
+            "max_epoch": max_epoch,
+            "num_peers": num_peers,
+            "batch_size": batch_size,
             "bytes_sent": self.bytes_sent,
             "bytes_received": self.bytes_received,
             "message_sent": self.message_sent,

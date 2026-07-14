@@ -303,13 +303,13 @@ class PeerNode (Node):
 
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
-                self.logger.log_performance(epoch+1, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
+                self.logger.log_performance(epoch+1, self.batch_size, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
                 self.print_debug_messages("Early stopping triggered at epoch " + str(epoch))
                 break
             
-            self.logger.log_performance(epoch+1, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, False)
-            self.logger.log_communication(epoch+1)
-            self.logger.log_computation(epoch+1)
+            self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size, avg_val_loss, val_f1.item(), itr_per_sec, False)
+            self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size)
+            #self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size)
 
         self.print_debug_messages("Finished training")
 
