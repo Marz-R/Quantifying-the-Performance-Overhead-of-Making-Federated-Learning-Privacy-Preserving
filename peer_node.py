@@ -14,6 +14,7 @@ from bulletin_client import BulletinClient
 from data_load import load_dataset
 from early_stopping import EarlyStopping
 from measurements.exp_logger import ExperimentLogger
+from measurements.communication_tracker import CommunicationTracker
 
 
 # Hyperparameters
@@ -68,6 +69,7 @@ class PeerNode (Node):
         self.ready_queue = queue.Queue()
 
         self.logger = exp_logger
+        self.comm_tracker = CommunicationTracker()
 
         self.debug_message = debug_message
 
@@ -95,7 +97,7 @@ class PeerNode (Node):
 
 
     def node_message(self, node, data):
-        self.logger.record_received(data)
+        self.comm_tracker.record_received(data)
 
         if node.id == str(data["sender_id"]): # is it nessary to check sender_id?
 
@@ -307,9 +309,9 @@ class PeerNode (Node):
                 self.print_debug_messages("Early stopping triggered at epoch " + str(epoch))
                 break
             
-            self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size, avg_val_loss, val_f1.item(), itr_per_sec, False)
-            self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size)
-            #self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list), self.batch_size)
+            self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_val_loss, val_f1.item(), itr_per_sec, False)
+            self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.comm_tracker.get_recordings())
+            #self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list))
 
         self.print_debug_messages("Finished training")
 
@@ -332,12 +334,12 @@ class PeerNode (Node):
         for node in self.nodes_outbound:
             if recipient_id is None and recipient_host is None:
                 self.send_to_node(node, message)
-                self.logger.record_sent(message)
+                self.comm_tracker.record_sent(message)
                 self.print_debug_messages("Submitted weights to node " + node.id)
             else:
                 if node.id == recipient_id and node.host == recipient_host:
                     self.send_to_node(node, message)
-                    self.logger.record_sent(message)
+                    self.comm_tracker.record_sent(message)
                     self.print_debug_messages("Submitted weights to node " + node.id)
                     break
 
@@ -375,7 +377,7 @@ class PeerNode (Node):
 
         for node in self.nodes_outbound:
             self.send_to_node(node, message)
-            self.logger.record_sent(message)
+            self.comm_tracker.record_sent(message)
         
         expected_ready_count = len(self.peer_list) - 1
         ready_peers = []
