@@ -5,7 +5,6 @@ import queue
 from typing import Optional
 from enum import Enum, auto
 from tqdm import tqdm
-from time import time
 from p2pnetwork.node import Node
 import torch
 import torch.nn as nn
@@ -15,6 +14,7 @@ from data_load import load_dataset
 from early_stopping import EarlyStopping
 from measurements.exp_logger import ExperimentLogger
 from measurements.communication_tracker import CommunicationTracker
+from measurements.hardware_tracker import HardwareTracker
 
 
 # Hyperparameters
@@ -70,6 +70,7 @@ class PeerNode (Node):
 
         self.logger = exp_logger
         self.comm_tracker = CommunicationTracker()
+        self.hardware_tracker = HardwareTracker(sampling_interval=0.5)
 
         self.debug_message = debug_message
 
@@ -199,8 +200,10 @@ class PeerNode (Node):
             total_training_samples = 0            
 
             train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
-            epoch_start_time = time()
+            epoch_start_time = time.time()
             num_batches = len(self.train_data)
+
+            self.hardware_tracker.start()
 
             # training loop
             for i, (images, labels) in enumerate(train_bar):  
@@ -286,7 +289,9 @@ class PeerNode (Node):
 
                     f1.update(val_outputs, labels)
 
-            epoch_end_time = time()
+            self.hardware_tracker.stop()
+
+            epoch_end_time = time.time()
             epoch_duration = epoch_end_time - epoch_start_time
             itr_per_sec = total_training_samples / epoch_duration if epoch_duration > 0 else 0
 
@@ -305,13 +310,13 @@ class PeerNode (Node):
 
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
-                self.logger.log_performance(epoch+1, self.batch_size, avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
+                self.logger.log_performance(epoch+1, self.batch_size, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
                 self.print_debug_messages("Early stopping triggered at epoch " + str(epoch))
                 break
             
-            self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_val_loss, val_f1.item(), itr_per_sec, False)
+            self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, False)
             self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.comm_tracker.get_recordings())
-            #self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list))
+            self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list), self.hardware_tracker.get_usage())
 
         self.print_debug_messages("Finished training")
 
