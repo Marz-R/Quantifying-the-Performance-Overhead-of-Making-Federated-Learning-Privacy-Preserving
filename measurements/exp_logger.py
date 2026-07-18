@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-import numpy as np
 
 class ExperimentLogger:
     def __init__(self, peer_id, model, dataset, privacy_protocol, output_path='./measurements'):

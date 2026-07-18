@@ -49,7 +49,7 @@ class PeerNode (Node):
 
         self.batch_size = batch_size
         self.model = model.to(device)
-        self.train_data, self.val_data, _ = load_dataset(dataset, self.batch_size, VALID_SPLIT, download=False)
+        self.train_data, self.val_data, _ = load_dataset(dataset, self.batch_size, VALID_SPLIT, download=True) # if dataset already exist, it's not downloading again
 
         self.iteration = 0
         self.sync_every = sync_every # default 5
