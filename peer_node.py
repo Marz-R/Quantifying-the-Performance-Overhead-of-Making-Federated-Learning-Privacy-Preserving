@@ -58,7 +58,7 @@ class PeerNode (Node):
 
         self.peer_list = {} # peer_id: {"host": str, "port": int}
         self.last_seen_version = 0
-        self.connected_peers = {}
+        self.connected_peers = []
 
         self.max_epochs = None
         self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
@@ -135,11 +135,14 @@ class PeerNode (Node):
     
     def connect_with_peers(self):
         # Connect to all peers in the peer list
+        ids = [n.id for n in self.nodes_outbound] + [n.id for n in self.nodes_outbound]
+
         for peer_id, peer_info in self.peer_list.items():
-            if peer_id != self.id and peer_id not in self.connected_peers:
+            if peer_id != self.id and peer_id not in ids:
                 self.connect_with_node(peer_info["host"], peer_info["port"])
-                self.connected_peers[peer_id] = peer_info
                 self.print_debug_messages("Connected to Peer " + peer_id)
+
+        self.connected_peers = self.nodes_outbound + self.nodes_inbound
 
 
     def update_peer_list(self):
@@ -149,25 +152,19 @@ class PeerNode (Node):
             self.peer_list = response["peer_list"]
             self.last_seen_version = response["version"]
 
-            outdated_peers = []
-
-            for peer_id in list(self.connected_peers.keys()):
-                if peer_id not in self.peer_list:
-                    outdated_peers.append(peer_id)
-            
-            for n in self.nodes_outbound: 
-                if n.id in outdated_peers:
-                    self.disconnect_with_node(n)
-                    del self.connected_peers[n.id]
-                    self.print_debug_messages("Peer " + n.id + " left, disconnected.")
+            for peer in self.connected_peers:
+                if peer.id not in self.peer_list:
+                    self.disconnect_with_node(peer)
+                    self.print_debug_messages("Peer " + peer.id + " left, disconnected.")
+                    self.connected_peers.remove(peer)
 
             self.connect_with_peers()
         
 
     def _disconnect_all_peers(self):
-        for node in self.nodes_outbound:
+        for node in self.connected_peers:
             self.disconnect_with_node(node)
-            del self.connected_peers[node.id]
+            self.connected_peers.remove(node)
 
 
     def quit_network(self):
@@ -187,7 +184,7 @@ class PeerNode (Node):
         
         f1 = F1Score(task='multiclass', num_classes=10, average='macro').to(device)
 
-        epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress")
+        epoch_bar = tqdm(range(self.max_epochs), desc="Training Progress", leave=False)
 
         for epoch in epoch_bar:
             self.update_peer_list()
@@ -199,7 +196,7 @@ class PeerNode (Node):
             total_train_loss = 0.0
             total_training_samples = 0            
 
-            train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]")
+            train_bar = tqdm(self.train_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [training]", leave=False)
             epoch_start_time = time.time()
             num_batches = len(self.train_data)
 
@@ -243,15 +240,20 @@ class PeerNode (Node):
                 expected_weights_count = len(self.peer_list) - 1 # excluding self
                 self.peers_weights[i] = {}
 
+                deadline = time.monotonic() + 5
                 while len(self.peers_weights[i]) < expected_weights_count:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
+                        break
                     try:
-                        sender_id, message = self.weights_queue.get(timeout=10)
+                        sender_id, message = self.weights_queue.get(timeout=remaining)
                         if message["iteration"] == i:
                             self.peers_weights[i][sender_id] = message["weights"]
                         elif message["iteration"] > i: # avoid re-queueing
                             self.peers_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
                     except queue.Empty:
-                        self.print_debug_messages("Timeout while waiting for weights from peers for iteration " + str(i))
+                        self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                         break
 
                 # update local model with aggregated weights from peers
@@ -269,7 +271,7 @@ class PeerNode (Node):
             total_val_losses = 0.0
             total_val_samples = 0
 
-            val_bar = tqdm(self.val_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [validation]")
+            val_bar = tqdm(self.val_data, desc=f"Epoch {epoch+1}/{self.max_epochs} [validation]", leave=False)
 
             # validation loop
             with torch.no_grad():
@@ -293,7 +295,7 @@ class PeerNode (Node):
 
             epoch_end_time = time.time()
             epoch_duration = epoch_end_time - epoch_start_time
-            itr_per_sec = total_training_samples / epoch_duration if epoch_duration > 0 else 0
+            itr_per_sec = num_batches / epoch_duration if epoch_duration > 0 else 0
 
             avg_train_loss = total_train_loss / total_training_samples if total_training_samples > 0 else 0
             avg_val_loss = total_val_losses / total_val_samples if total_val_samples > 0 else 0
@@ -336,7 +338,7 @@ class PeerNode (Node):
         }
 
         # send corresponding weights to peers using outbound connections for security
-        for node in self.nodes_outbound:
+        for node in self.connected_peers:
             if recipient_id is None and recipient_host is None:
                 self.send_to_node(node, message)
                 self.comm_tracker.record_sent(message)
@@ -380,22 +382,23 @@ class PeerNode (Node):
             "iteration": iteration
         }
 
-        for node in self.nodes_outbound:
+        for node in self.connected_peers:
             self.send_to_node(node, message)
             self.comm_tracker.record_sent(message)
         
         expected_ready_count = len(self.peer_list) - 1
         ready_peers = []
 
+        deadline = time.monotonic() + 5
         while len(ready_peers) < expected_ready_count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))
+                break
             try:
-                message = self.ready_queue.get(timeout=10)
+                message = self.ready_queue.get(timeout=remaining)
                 if message["iteration"] >= iteration:
                     ready_peers.append(message["sender_id"])
             except queue.Empty:
-                self.print_debug_messages("Timeout while waiting for ready signals for iteration " + str(iteration))
+                self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))
                 break
-
-
-    def get_connected_peers(self):
-        return self.connected_peers
