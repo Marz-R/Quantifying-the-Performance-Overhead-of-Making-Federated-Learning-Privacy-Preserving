@@ -12,11 +12,13 @@ class HardwareTracker:
         self.sampling_interval = sampling_interval
 
         self.gpu_list = [gpu for gpu in GPUtil.getGPUs()]
+        self.cpu_count = psutil.cpu_count(logical=True) or 1
         self.cpu_usage = []
         self.memory_usage = []
         self.gpu_usage = {}
 
         self._process = psutil.Process(os.getpid()) # only measure the usage of main process, i.e. PeerNode.training
+        self._process.cpu_percent(interval=None) # internal baseline, discard
 
 
     def _recording(self):
@@ -26,8 +28,8 @@ class HardwareTracker:
                 break
 
             with self._lock:
-                self.cpu_usage.append(self._process.cpu_percent(interval=None))
-                self.memory_usage.append(self._process.memory_percent())
+                self.cpu_usage.append(self._process.cpu_percent(interval=None) / self.cpu_count)
+                self.memory_usage.append(self._process.memory_info().rss / 1e6)
 
                 for gpu in self.gpu_list:
                     if gpu.id not in self.gpu_usage:
@@ -51,15 +53,15 @@ class HardwareTracker:
     def get_usage(self):
         with self._lock:
             row = {
-                "cpu_mean": np.mean(self.cpu_usage),
-                "cpu_max": np.max(self.cpu_usage),
-                "memory_mean": np.mean(self.memory_usage),
-                "memory_max": np.max(self.memory_usage)
+                "cpu_mean (%)": np.mean(self.cpu_usage),
+                "cpu_max (%)": np.max(self.cpu_usage),
+                "memory_mean (mb)": np.mean(self.memory_usage),
+                "memory_max (mb)": np.max(self.memory_usage)
             }
 
             for gpu_id, usage in self.gpu_usage.items():
-                row[f"gpu{gpu_id}_mean"] = np.mean(usage)
-                row[f"gpu{gpu_id}_max"] = np.max(usage)
+                row[f"gpu{gpu_id}_mean (%)"] = np.mean(usage)
+                row[f"gpu{gpu_id}_max (%)"] = np.max(usage)
 
             self.cpu_usage = []
             self.memory_usage = []
