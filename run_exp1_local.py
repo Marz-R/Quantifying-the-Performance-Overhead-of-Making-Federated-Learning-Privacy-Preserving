@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 from bulletin_client import BulletinClient
 from model_cnn import CNN

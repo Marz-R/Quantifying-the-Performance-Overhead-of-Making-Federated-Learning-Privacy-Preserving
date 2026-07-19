@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 from bulletin_client import BulletinClient
 from model_cnn import CNN
@@ -24,7 +25,7 @@ if __name__ == "__main__":
         )
     
     model = CNN(10, 1, 3*3)
-    node = PeerNode(host=host, port=port, model=model, dataset="MNIST", exp_logger=exp_logger, id=node_id, sync_every=10)
+    node = PeerNode(host=host, port=port, model=model, dataset="MNIST", exp_logger=exp_logger, id=node_id, sync_every=5)
 
     node.start()
     node.register_to_network(bulletin)
