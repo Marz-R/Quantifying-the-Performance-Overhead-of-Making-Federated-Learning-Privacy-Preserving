@@ -248,8 +248,8 @@ class PeerNode (Node):
                         sender_id, message = self.weights_queue.get(timeout=10)
                         if message["iteration"] == i:
                             self.peers_weights[i][sender_id] = message["weights"]
-                        elif message["iteration"] > i:
-                            self.weights_queue.put((sender_id, message)) # Re-queue the message from furture iteration
+                        elif message["iteration"] > i: # avoid re-queueing
+                            self.peers_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
                     except queue.Empty:
                         self.print_debug_messages("Timeout while waiting for weights from peers for iteration " + str(i))
                         break
@@ -390,10 +390,8 @@ class PeerNode (Node):
         while len(ready_peers) < expected_ready_count:
             try:
                 message = self.ready_queue.get(timeout=10)
-                if message["iteration"] == iteration:
+                if message["iteration"] >= iteration:
                     ready_peers.append(message["sender_id"])
-                else:
-                    self.ready_queue.put(message) # put it back if it's for a different iteration
             except queue.Empty:
                 self.print_debug_messages("Timeout while waiting for ready signals for iteration " + str(iteration))
                 break
