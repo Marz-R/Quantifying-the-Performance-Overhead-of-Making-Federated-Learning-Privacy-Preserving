@@ -240,14 +240,9 @@ class PeerNode (Node):
                 expected_weights_count = len(self.peer_list) - 1 # excluding self
                 self.peers_weights[i] = {}
 
-                deadline = time.monotonic() + 5
                 while len(self.peers_weights[i]) < expected_weights_count:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
-                        break
                     try:
-                        sender_id, message = self.weights_queue.get(timeout=remaining)
+                        sender_id, message = self.weights_queue.get(timeout=60)
                         if message["iteration"] == i:
                             self.peers_weights[i][sender_id] = message["weights"]
                         elif message["iteration"] > i: # avoid re-queueing
@@ -389,15 +384,10 @@ class PeerNode (Node):
         expected_ready_count = len(self.peer_list) - 1
         ready_peers = []
 
-        deadline = time.monotonic() + 5
         while len(ready_peers) < expected_ready_count:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))
-                break
             try:
-                message = self.ready_queue.get(timeout=remaining)
-                if message["iteration"] >= iteration:
+                message = self.ready_queue.get(timeout=60)
+                if message["iteration"] >= iteration and message["sender_id"] not in ready_peers:
                     ready_peers.append(message["sender_id"])
             except queue.Empty:
                 self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))

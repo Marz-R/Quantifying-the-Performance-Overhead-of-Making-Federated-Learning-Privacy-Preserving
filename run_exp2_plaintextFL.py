@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import time
 import argparse
 from bulletin_client import BulletinClient
 from model_cnn import CNN
@@ -29,6 +30,7 @@ if __name__ == "__main__":
 
     node.start()
     node.register_to_network(bulletin)
+    time.sleep(10)
     node.connect_with_peers()
     node.training()
     node.quit_network()
