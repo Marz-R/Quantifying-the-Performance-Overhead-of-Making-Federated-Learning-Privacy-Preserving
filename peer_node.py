@@ -305,6 +305,9 @@ class PeerNode (Node):
                 f"val_f1={val_f1:.4f}"
             )
 
+            self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.comm_tracker.get_recordings())
+            self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list), self.hardware_tracker.get_usage())
+
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
                 self.logger.log_performance(epoch+1, self.batch_size, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
@@ -312,8 +315,6 @@ class PeerNode (Node):
                 break
             
             self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, False)
-            self.logger.log_communication(epoch+1, self.max_epochs, len(self.peer_list), self.comm_tracker.get_recordings())
-            self.logger.log_computation(epoch+1, self.max_epochs, len(self.peer_list), self.hardware_tracker.get_usage())
 
         self.print_debug_messages("Finished training")
 
