@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torchmetrics.classification import F1Score
 from bulletin_client import BulletinClient
-from data_load import load_dataset
+from data_load import load_data
 from early_stopping import EarlyStopping
 from measurements.exp_logger import ExperimentLogger
 from measurements.communication_tracker import CommunicationTracker
@@ -49,7 +49,7 @@ class PeerNode (Node):
 
         self.batch_size = batch_size
         self.model = model.to(device)
-        self.train_data, self.val_data, _ = load_dataset(dataset, self.batch_size, VALID_SPLIT, download=True) # if dataset already exist, it's not downloading again
+        self.train_data, self.val_data = load_data(dataset, self.id, self.batch_size, VALID_SPLIT)
 
         self.iteration = 0
         self.sync_every = sync_every # default 5
