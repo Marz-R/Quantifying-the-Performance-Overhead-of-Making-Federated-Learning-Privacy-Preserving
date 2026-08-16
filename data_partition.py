@@ -1,5 +1,6 @@
 import torch
 import json
+import argparse
 from data_load import _get_dataset
 
 def partition_iid(data_name, dataset, peer_list):
@@ -33,10 +34,14 @@ def _to_json(peer_list, peer_indices, dataset_name, partition_type):
 
 
 if __name__ == "__main__":
-    dataset_name = "MNIST"
-    peer_list = ["03", "04", "05"]
-    BATCH_SIZE = 128
-    VALID_SPLIT = 0.2
+	parser = argparse.ArgumentParser()
+	parser.add_argument("--dataset", type=str, default="MNIST", help="Dataset name (default: MNIST)")
+	args = parser.parse_args()
+	
+	dataset_name = "MNIST"
+	peer_list = ["03", "04", "05"]
+	BATCH_SIZE = 128
+	VALID_SPLIT = 0.2
 
-    train_loader, _ = _get_dataset(dataset_name, BATCH_SIZE, VALID_SPLIT)
-    partition_iid(dataset_name, train_loader.dataset, peer_list)
+	train_loader, _ = _get_dataset(dataset_name, BATCH_SIZE, VALID_SPLIT)
+	partition_iid(dataset_name, train_loader.dataset, peer_list)

@@ -37,6 +37,7 @@ class PeerNode (Node):
                  model: nn.Module, 
                  dataset: str,
                  exp_logger: ExperimentLogger,
+                 privacy_protocol: str,
                  id=None, # id is *string*, if input is int, parent class will convert it to string
                  batch_size=128,
                  sync_every=5,
@@ -53,6 +54,8 @@ class PeerNode (Node):
 
         self.iteration = 0
         self.sync_every = sync_every # default 5
+
+        self.privacy_protocol = privacy_protocol
 
         self.bulletin: Optional[BulletinClient] = None
 
@@ -212,11 +215,14 @@ class PeerNode (Node):
                 labels = labels.to(device)
                 
                 optimizer.zero_grad()
+
+                self.hardware_tracker.phase_start("gradient_computation")
                 train_outputs = self.model(images)
                 train_loss = criterion(train_outputs, labels)
                 
                 train_loss.backward()
                 optimizer.step()
+                self.hardware_tracker.phase_stop("gradient_computation")
 
                 sample_size = images.size(0)
                 total_train_loss += train_loss.item() * sample_size
@@ -232,8 +238,10 @@ class PeerNode (Node):
                 # get model weights and save to history
                 state_dict = self.model.state_dict()
                 cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
+                #private_state_dict = self.apply_privacy_protocol(cpu_state_dict)
 
                 # encode weights and submit to peers
+                self.comm_tracker.timer_start()
                 self.submit_weights(cpu_state_dict)
 
                 # collect weights from peers for current iteration before aggregation
@@ -261,6 +269,7 @@ class PeerNode (Node):
                 self.print_debug_messages("Finished training iteration " + str(i))
 
                 self.iteration_ready(i)
+                self.comm_tracker.timer_stop()
 
 
             total_val_losses = 0.0
@@ -317,6 +326,11 @@ class PeerNode (Node):
             self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, False)
 
         self.print_debug_messages("Finished training")
+
+
+    def apply_privacy_protocol(self, state_dict):
+        if self.privacy_protocol == "Plaintext":
+            return state_dict
 
 
     def submit_weights(self, weights, recipient_id=None, recipient_host=None):
