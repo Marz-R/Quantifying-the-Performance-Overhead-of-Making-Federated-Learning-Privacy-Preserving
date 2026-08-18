@@ -46,11 +46,8 @@ def load_data(dataset_name, peer_id, batch_size, VALID_SPLIT, partition_type="ii
 	train_loader, valid_loader = _get_dataset(dataset_name, batch_size, VALID_SPLIT)
 	peers_indices = json.load(open(f"data/{dataset_name}_{partition_type}_partition.json", "r"))
 
-	peer_indices = peers_indices[peer_id]
-	peer_loaders  = []
-	for indices in peer_indices:
-		peer_subset = torch.utils.data.Subset(train_loader.dataset, indices)
-		peer_loader = torch.utils.data.DataLoader(peer_subset, batch_size=batch_size, shuffle=True)
-		peer_loaders.append(peer_loader)
+	peer_index = peers_indices[peer_id]
+	peer_subset = torch.utils.data.Subset(train_loader.dataset, peer_index)
+	peer_loader = torch.utils.data.DataLoader(peer_subset, batch_size=batch_size, shuffle=True)
 
-	return peer_loaders, valid_loader
+	return peer_loader, valid_loader
