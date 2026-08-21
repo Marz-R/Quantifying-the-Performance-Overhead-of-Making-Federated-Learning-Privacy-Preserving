@@ -15,6 +15,7 @@ from early_stopping import EarlyStopping
 from measurements.exp_logger import ExperimentLogger
 from measurements.communication_tracker import CommunicationTracker
 from measurements.hardware_tracker import HardwareTracker
+from privacy_adss import AdditiveSecretSharing
 
 
 # Hyperparameters
@@ -55,8 +56,6 @@ class PeerNode (Node):
         self.iteration = 0
         self.sync_every = sync_every # default 5
 
-        self.privacy_protocol = privacy_protocol
-
         self.bulletin: Optional[BulletinClient] = None
 
         self.peer_list = {} # peer_id: {"host": str, "port": int}
@@ -74,6 +73,13 @@ class PeerNode (Node):
         self.logger = exp_logger
         self.comm_tracker = CommunicationTracker()
         self.hardware_tracker = HardwareTracker(sampling_interval=0.5)
+
+        if privacy_protocol == "AdditiveSecretSharing":
+            self.privacy_protocol = AdditiveSecretSharing(peer_list=[]) 
+            self.partial_weights = {}
+            self.partial_weights_queue = queue.Queue()
+        else:
+            self.privacy_protocol = None
 
         self.debug_message = debug_message
 
@@ -131,6 +137,9 @@ class PeerNode (Node):
         self.peer_list = peer_list_response["peer_list"]
         self.last_seen_version = peer_list_response["version"]
 
+        if isinstance(self.privacy_protocol, AdditiveSecretSharing):
+            self.privacy_protocol.update_peers_list([peer_id for peer_id in self.peer_list.keys() if peer_id != self.id])
+
         self.max_epochs = self.bulletin.get_num_epochs()
 
         self.print_debug_messages("Registered to network.")
@@ -162,6 +171,9 @@ class PeerNode (Node):
                     self.connected_peers.remove(peer)
 
             self.connect_with_peers()
+
+        if isinstance(self.privacy_protocol, AdditiveSecretSharing):
+            self.privacy_protocol.update_peers_list([peer_id for peer_id in self.peer_list.keys() if peer_id != self.id])
         
 
     def _disconnect_all_peers(self):
@@ -237,17 +249,55 @@ class PeerNode (Node):
 
                 # get model weights and save to history
                 state_dict = self.model.state_dict()
-                cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
-                #private_state_dict = self.apply_privacy_protocol(cpu_state_dict)
 
                 # encode weights and submit to peers
-                self.comm_tracker.timer_start()
-                self.submit_weights(cpu_state_dict)
+                if isinstance(self.privacy_protocol, AdditiveSecretSharing):
+                    self.hardware_tracker.phase_start("secret_sharing")
+                    shared_state_dict = self.privacy_protocol.before_send(state_dict)
+                    for peer_id, shares in shared_state_dict.items():
+                        if peer_id !=  self.id:
+                            peer_info = self.peer_list.get(peer_id)
+
+                            self.comm_tracker.timer_start()
+                            self.submit_weights(shares, recipient_id=peer_id, recipient_host=peer_info["host"])
+                            self.comm_tracker.timer_stop()
+                    
+                    expected_partial_weights_count = len(self.peer_list) - 1 # excluding self
+                    self.partial_weights[i] = {}
+
+                    self.comm_tracker.timer_start()
+                    while len(self.partial_weights[i]) < expected_partial_weights_count:
+                        try:
+                            sender_id, message = self.partial_weights_queue.get(timeout=60)
+                            if message["iteration"] == i:
+                                self.partial_weights[i][sender_id] = message["weights"]
+                            elif message["iteration"] > i: # avoid re-queueing
+                                self.partial_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
+                        except queue.Empty:
+                            self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
+                            break
+                    self.comm_tracker.timer_stop()
+
+                    aggregated_partial_weights = self.privacy_protocol.after_receive(self.partial_weights[i])
+                    self.hardware_tracker.phase_stop("secret_sharing")
+
+                    cpu_aggregated_partial_weights = {k: v.cpu().clone().detach() for k, v in aggregated_partial_weights.items()}
+                    self.comm_tracker.timer_start()
+                    self.submit_weights(cpu_aggregated_partial_weights)
+                    self.comm_tracker.timer_stop()
+                    del self.partial_weights[i]
+                    
+                else:
+                    cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
+                    self.comm_tracker.timer_start()
+                    self.submit_weights(cpu_state_dict)
+                    self.comm_tracker.timer_stop()
 
                 # collect weights from peers for current iteration before aggregation
                 expected_weights_count = len(self.peer_list) - 1 # excluding self
                 self.peers_weights[i] = {}
 
+                self.comm_tracker.timer_start()
                 while len(self.peers_weights[i]) < expected_weights_count:
                     try:
                         sender_id, message = self.weights_queue.get(timeout=60)
@@ -258,16 +308,21 @@ class PeerNode (Node):
                     except queue.Empty:
                         self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                         break
+                self.comm_tracker.timer_stop()
 
                 # update local model with aggregated weights from peers
                 if i in self.peers_weights:
                     self.print_debug_messages("Updating local model with weights from iteration " + str(i))
-                    aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
+                    if isinstance(self.privacy_protocol, AdditiveSecretSharing):
+                        aggregated_weights = self.aggregate_weights(aggregated_partial_weights, self.peers_weights[i])
+                    else:
+                        aggregated_weights = self.aggregate_weights(self.model.state_dict(), self.peers_weights[i])
                     self.model.load_state_dict(aggregated_weights)
                     del self.peers_weights[i] # clear the weights for this iteration after aggregation
 
                 self.print_debug_messages("Finished training iteration " + str(i))
 
+                self.comm_tracker.timer_start()
                 self.iteration_ready(i)
                 self.comm_tracker.timer_stop()
 
@@ -328,11 +383,6 @@ class PeerNode (Node):
         self.print_debug_messages("Finished training")
 
 
-    def apply_privacy_protocol(self, state_dict):
-        if self.privacy_protocol == "Plaintext":
-            return state_dict
-
-
     def submit_weights(self, weights, recipient_id=None, recipient_host=None):
         self.state = RoundState.COMMUNICATION
 
@@ -344,7 +394,8 @@ class PeerNode (Node):
             "timestamp": time.time(),
             "iteration": self.iteration,
             "batch_size": self.batch_size,
-            "weights":  encoded_state_dict
+            "weights":  encoded_state_dict,
+            "partial_weights": True if recipient_id is not None and recipient_host is not None else False,
         }
 
         # send corresponding weights to peers using outbound connections for security
@@ -367,18 +418,23 @@ class PeerNode (Node):
         message = data
         message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
-        self.weights_queue.put((node.id, message))
+        if message["partial_weights"]:
+            self.partial_weights_queue.put((node.id, message))
+        else:
+            self.weights_queue.put((node.id, message))
 
 
     def aggregate_weights(self, local_state_dict, peers_weights):
         self.print_debug_messages("Aggregating...")
+        self.hardware_tracker.phase_start("aggregation")
 
         all_weights = [local_state_dict] + list(peers_weights.values())
         aggregated_weights = {}
 
         for key in local_state_dict.keys():
             aggregated_weights[key] = torch.stack([w[key].float().to(device) for w in all_weights]).mean(dim=0).detach().clone()
-        
+            
+        self.hardware_tracker.phase_stop("aggregation")
         return aggregated_weights
         
 
