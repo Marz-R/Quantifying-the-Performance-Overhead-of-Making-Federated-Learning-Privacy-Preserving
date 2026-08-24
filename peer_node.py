@@ -75,7 +75,7 @@ class PeerNode (Node):
         self.hardware_tracker = HardwareTracker(sampling_interval=0.5)
 
         if privacy_protocol == "AdditiveSecretSharing":
-            self.privacy_protocol = AdditiveSecretSharing(peer_list=[]) 
+            self.privacy_protocol = AdditiveSecretSharing(peers_list=[]) 
             self.partial_weights = {}
             self.partial_weights_queue = queue.Queue()
         else:
@@ -374,7 +374,7 @@ class PeerNode (Node):
 
             # check for early stopping
             if self.early_stopping.stop(avg_val_loss):
-                self.logger.log_performance(epoch+1, self.batch_size, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
+                self.logger.log_performance(epoch+1, self.max_epochs, len(self.peer_list), avg_train_loss, avg_val_loss, val_f1.item(), itr_per_sec, True)
                 self.print_debug_messages("Early stopping triggered at epoch " + str(epoch))
                 break
             
