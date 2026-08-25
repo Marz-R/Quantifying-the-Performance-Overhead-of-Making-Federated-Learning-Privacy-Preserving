@@ -3,6 +3,9 @@ data/
 .DS_Store
 .vscode
 *.csv
+run_exp1*
+run_exp2*
+run_exp3*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -6,7 +6,6 @@ class AdditiveSecretSharing(PrivacyProtocol):
     def __init__(self, peers_list):
         self.secret_share = SecretShare()
         self._shares = {}
-        self._multiplier = 1e6
         self._num_peers = len(peers_list)
         self._peers_list = peers_list
 
@@ -15,8 +14,7 @@ class AdditiveSecretSharing(PrivacyProtocol):
         # generate shares
         total_shares = {}
         for k, v in weights.items():
-            int_tensor = self._to_int(v)
-            shares = self.secret_share.share(int_tensor, self._num_peers)
+            shares = self.secret_share.share(v, self._num_peers)
             total_shares[k] = shares
 
         for i in range(self._num_peers):
@@ -39,7 +37,7 @@ class AdditiveSecretSharing(PrivacyProtocol):
                 partial_weights_lists[layer].append(value)
 
         for layer, shares in partial_weights_lists.items():
-            reconstructed_weights[layer] = self.secret_share.reconstruct(shares).to(dtype=torch.float64) / self._multiplier
+            reconstructed_weights[layer] = self.secret_share.reconstruct(shares).to(dtype=torch.float32)
 
         return reconstructed_weights
 
@@ -47,6 +45,3 @@ class AdditiveSecretSharing(PrivacyProtocol):
     def update_peers_list(self, peers_list):
         self._peers_list = peers_list
         self._num_peers = len(peers_list)
-
-    def _to_int(self, tensor):
-        return (tensor * self._multiplier).to(dtype=torch.int64)

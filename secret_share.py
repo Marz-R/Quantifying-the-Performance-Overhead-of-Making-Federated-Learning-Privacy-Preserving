@@ -18,11 +18,11 @@ class SecretShare:
         """
 
         shares = []
-        secret = secret.to(dtype=torch.int64, device=self.device)
-        sum_shares = torch.zeros_like(secret, dtype=torch.int64, device=self.device)
+        secret = secret.to(dtype=torch.float32, device=self.device) # to device
+        sum_shares = torch.zeros_like(secret, dtype=torch.float32, device=self.device)
 
         for _ in range(num_shares - 1):
-            share = torch.randint(torch.iinfo(torch.int64).min, torch.iinfo(torch.int64).max, secret.shape, device=self.device)
+            share = torch.rand(secret.shape, device=self.device)
             shares.append(share) 
             sum_shares += share
 
@@ -40,8 +40,8 @@ class SecretShare:
             Tensor: The reconstructed secret.
         """
 
-        shares = [share.to(dtype=torch.int64, device=self.device) for share in shares]
-        secret = torch.zeros_like(shares[0], dtype=torch.int64, device=self.device)
+        shares = [share.to(dtype=torch.float32, device=self.device) for share in shares] # to device
+        secret = torch.zeros_like(shares[0], dtype=torch.float32, device=self.device)
 
         for share in shares:
             secret += share

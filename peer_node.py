@@ -259,7 +259,7 @@ class PeerNode (Node):
                             peer_info = self.peer_list.get(peer_id)
 
                             self.comm_tracker.timer_start()
-                            self.submit_weights(shares, recipient_id=peer_id, recipient_host=peer_info["host"])
+                            self.submit_weights(shares, True, recipient_id=peer_id, recipient_host=peer_info["host"])
                             self.comm_tracker.timer_stop()
                     
                     expected_partial_weights_count = len(self.peer_list) - 1 # excluding self
@@ -273,6 +273,7 @@ class PeerNode (Node):
                                 self.partial_weights[i][sender_id] = message["weights"]
                             elif message["iteration"] > i: # avoid re-queueing
                                 self.partial_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
+                            self.print_debug_messages("Partial weights from node " + str(sender_id) + " for iteration " + str(i) + " have been processed.")
                         except queue.Empty:
                             self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                             break
@@ -283,14 +284,14 @@ class PeerNode (Node):
 
                     cpu_aggregated_partial_weights = {k: v.cpu().clone().detach() for k, v in aggregated_partial_weights.items()}
                     self.comm_tracker.timer_start()
-                    self.submit_weights(cpu_aggregated_partial_weights)
+                    self.submit_weights(cpu_aggregated_partial_weights, False)
                     self.comm_tracker.timer_stop()
                     del self.partial_weights[i]
                     
                 else:
                     cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
                     self.comm_tracker.timer_start()
-                    self.submit_weights(cpu_state_dict)
+                    self.submit_weights(cpu_state_dict, False)
                     self.comm_tracker.timer_stop()
 
                 # collect weights from peers for current iteration before aggregation
@@ -305,6 +306,7 @@ class PeerNode (Node):
                             self.peers_weights[i][sender_id] = message["weights"]
                         elif message["iteration"] > i: # avoid re-queueing
                             self.peers_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
+                        self.print_debug_messages("Weights from node " + str(sender_id) + " for iteration " + str(i) + " have been processed.")
                     except queue.Empty:
                         self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                         break
@@ -383,7 +385,7 @@ class PeerNode (Node):
         self.print_debug_messages("Finished training")
 
 
-    def submit_weights(self, weights, recipient_id=None, recipient_host=None):
+    def submit_weights(self, weights, partial_weights: bool, recipient_id=None, recipient_host=None):
         self.state = RoundState.COMMUNICATION
 
         # encode weights to base64 for transmission
@@ -395,7 +397,7 @@ class PeerNode (Node):
             "iteration": self.iteration,
             "batch_size": self.batch_size,
             "weights":  encoded_state_dict,
-            "partial_weights": True if recipient_id is not None and recipient_host is not None else False,
+            "partial_weights": partial_weights,
         }
 
         # send corresponding weights to peers using outbound connections for security
@@ -404,8 +406,7 @@ class PeerNode (Node):
                 self.send_to_node(node, message)
                 self.comm_tracker.record_sent(message)
                 self.print_debug_messages("Submitted weights to node " + node.id)
-            else:
-                if node.id == recipient_id and node.host == recipient_host:
+            elif node.id == recipient_id and node.host == recipient_host:
                     self.send_to_node(node, message)
                     self.comm_tracker.record_sent(message)
                     self.print_debug_messages("Submitted weights to node " + node.id)
