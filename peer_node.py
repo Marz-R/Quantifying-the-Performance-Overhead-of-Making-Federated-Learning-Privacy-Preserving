@@ -1,11 +1,9 @@
-import base64
 import time
-import io
 import queue
 from typing import Optional
 from enum import Enum, auto
 from tqdm import tqdm
-from p2pnetwork.node import Node
+from p2p_node import Node
 import torch
 import torch.nn as nn
 from torchmetrics.classification import F1Score
@@ -42,10 +40,8 @@ class PeerNode (Node):
                  id=None, # id is *string*, if input is int, parent class will convert it to string
                  batch_size=128,
                  sync_every=5,
-                 callback=None, 
-                 max_connections=0, # 0 means unlimited connections
                  debug_message=False):
-        super(PeerNode, self).__init__(host, port, id, callback, max_connections)
+        super(PeerNode, self).__init__(host, port, id)
         
         self.state = RoundState.IDLE
 
@@ -60,7 +56,6 @@ class PeerNode (Node):
 
         self.peer_list = {} # peer_id: {"host": str, "port": int}
         self.last_seen_version = 0
-        self.connected_peers = []
 
         self.max_epochs = None
         self.early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
@@ -68,7 +63,6 @@ class PeerNode (Node):
         self.peers_weights = {} # iteration: {peer_id: weights}
 
         self.weights_queue = queue.Queue()
-        self.ready_queue = queue.Queue()
 
         self.logger = exp_logger
         self.comm_tracker = CommunicationTracker()
@@ -89,43 +83,22 @@ class PeerNode (Node):
             print("**DEBUG** Node " + self.id + " : " + message)
 
 
-    def tensor_to_base64(self, tensor: torch.Tensor) -> dict:
-        buffer = io.BytesIO()
-        torch.save(tensor.cpu(), buffer)
-        return {
-            "_type":   "tensor",
-            "data":    base64.b64encode(buffer.getvalue()).decode("utf-8"),
-            "dtype":   str(tensor.dtype),
-            "shape":   list(tensor.shape),
-        }
-
-
-    def base64_to_tensor(self, encoded: dict) -> torch.Tensor:
-        raw = base64.b64decode(encoded["data"].encode("utf-8"))
-        buffer = io.BytesIO(raw)
-        return torch.load(buffer, map_location="cpu", weights_only=False)
-
-
-    def node_message(self, node, data):
+    def node_message(self, node_id, data):
         self.comm_tracker.record_received(data)
 
-        if node.id == str(data["sender_id"]): # is it nessary to check sender_id?
+        if node_id == str(data["sender_id"]): # is it nessary to check sender_id?
 
             if data["type"] == "weights_submission":
-                self.handle_weights_submission(node, data)
-
-            elif data["type"] == "iteration_ready":
-                self.print_debug_messages("Received iteration ready from node " + str(data["sender_id"]) + " for iteration " + str(data["iteration"]))
-                self.ready_queue.put(data)
+                self.handle_weights_submission(node_id, data)
 
             elif data["type"] == "test_message":
                 self.print_debug_messages("Received test message: " + data["message"] + " from node " + str(data["sender_id"]) + " to node " + str(self.id))
             
             else:
-                self.print_debug_messages("Received message with unknown type: " + data["type"] + " from node " + node.id)
+                self.print_debug_messages("Received message with unknown type: " + data["type"] + " from node " + node_id)
        
         else:
-            self.print_debug_messages("Received message with mismatching sender_id: " + str(data["sender_id"]) + " from node " + node.id)
+            self.print_debug_messages("Received message with mismatching sender_id: " + str(data["sender_id"]) + " from node " + node_id)
 
 
     def register_to_network(self, bulletin):
@@ -147,14 +120,10 @@ class PeerNode (Node):
     
     def connect_with_peers(self):
         # Connect to all peers in the peer list
-        ids = [n.id for n in self.nodes_outbound] + [n.id for n in self.nodes_outbound]
-
         for peer_id, peer_info in self.peer_list.items():
-            if peer_id != self.id and peer_id not in ids:
+            if peer_id != self.id and peer_id not in self.connected_nodes:
                 self.connect_with_node(peer_info["host"], peer_info["port"])
                 self.print_debug_messages("Connected to Peer " + peer_id)
-
-        self.connected_peers = self.nodes_outbound + self.nodes_inbound
 
 
     def update_peer_list(self):
@@ -164,29 +133,23 @@ class PeerNode (Node):
             self.peer_list = response["peer_list"]
             self.last_seen_version = response["version"]
 
-            for peer in self.connected_peers:
-                if peer.id not in self.peer_list:
-                    self.disconnect_with_node(peer)
-                    self.print_debug_messages("Peer " + peer.id + " left, disconnected.")
-                    self.connected_peers.remove(peer)
+            for peer_id in list(self.connected_nodes.keys()):
+                if peer_id not in self.peer_list:
+                    self.disconnect_with_node(peer_id)
+                    self.print_debug_messages("Peer " + peer_id + " left, disconnected.")
 
             self.connect_with_peers()
 
         if isinstance(self.privacy_protocol, AdditiveSecretSharing):
             self.privacy_protocol.update_peers_list([peer_id for peer_id in self.peer_list.keys() if peer_id != self.id])
-        
-
-    def _disconnect_all_peers(self):
-        for node in self.connected_peers:
-            self.disconnect_with_node(node)
-            self.connected_peers.remove(node)
 
 
     def quit_network(self):
         self.bulletin.remove_peer(self.id)
 
         self.bulletin = None
-        self._disconnect_all_peers()
+        for peer_id in list(self.connected_nodes.keys()):
+                self.disconnect_with_node(peer_id)
         self.peer_list = {}
         self.peers_weights = {}
 
@@ -252,14 +215,15 @@ class PeerNode (Node):
 
                 # encode weights and submit to peers
                 if isinstance(self.privacy_protocol, AdditiveSecretSharing):
-                    self.hardware_tracker.phase_start("secret_sharing")
+                    
+                    self.hardware_tracker.phase_start("secret_sharing_generation")
                     shared_state_dict = self.privacy_protocol.before_send(state_dict)
+                    self.hardware_tracker.phase_stop("secret_sharing_generation")
+
                     for peer_id, shares in shared_state_dict.items():
                         if peer_id !=  self.id:
-                            peer_info = self.peer_list.get(peer_id)
-
                             self.comm_tracker.timer_start()
-                            self.submit_weights(shares, True, recipient_id=peer_id, recipient_host=peer_info["host"])
+                            self.submit_weights(shares, True, recipient_id=peer_id)
                             self.comm_tracker.timer_stop()
                     
                     expected_partial_weights_count = len(self.peer_list) - 1 # excluding self
@@ -279,8 +243,9 @@ class PeerNode (Node):
                             break
                     self.comm_tracker.timer_stop()
 
+                    self.hardware_tracker.phase_start("secret_sharing_reconstruction")
                     aggregated_partial_weights = self.privacy_protocol.after_receive(self.partial_weights[i])
-                    self.hardware_tracker.phase_stop("secret_sharing")
+                    self.hardware_tracker.phase_stop("secret_sharing_reconstruction")
 
                     cpu_aggregated_partial_weights = {k: v.cpu().clone().detach() for k, v in aggregated_partial_weights.items()}
                     self.comm_tracker.timer_start()
@@ -325,7 +290,6 @@ class PeerNode (Node):
                 self.print_debug_messages("Finished training iteration " + str(i))
 
                 self.comm_tracker.timer_start()
-                self.iteration_ready(i)
                 self.comm_tracker.timer_stop()
 
 
@@ -385,44 +349,39 @@ class PeerNode (Node):
         self.print_debug_messages("Finished training")
 
 
-    def submit_weights(self, weights, partial_weights: bool, recipient_id=None, recipient_host=None):
+    def submit_weights(self, weights, partial_weights: bool, recipient_id=None):
         self.state = RoundState.COMMUNICATION
 
-        # encode weights to base64 for transmission
-        encoded_state_dict = {k: self.tensor_to_base64(v) for k, v in weights.items()}
         message = {
             "type": "weights_submission",
             "sender_id": self.id,
             "timestamp": time.time(),
             "iteration": self.iteration,
             "batch_size": self.batch_size,
-            "weights":  encoded_state_dict,
+            "weights":  weights,
             "partial_weights": partial_weights,
         }
 
-        # send corresponding weights to peers using outbound connections for security
-        for node in self.connected_peers:
-            if recipient_id is None and recipient_host is None:
-                self.send_to_node(node, message)
+        if recipient_id is None:
+            for peer_id in self.connected_nodes.keys():
+                self.send_to_node(peer_id, message)
                 self.comm_tracker.record_sent(message)
-                self.print_debug_messages("Submitted weights to node " + node.id)
-            elif node.id == recipient_id and node.host == recipient_host:
-                    self.send_to_node(node, message)
-                    self.comm_tracker.record_sent(message)
-                    self.print_debug_messages("Submitted weights to node " + node.id)
-                    break
+                self.print_debug_messages("Submitted weights to node " + peer_id)
+        else:
+            self.send_to_node(recipient_id, message)
+            self.comm_tracker.record_sent(message)
+            self.print_debug_messages("Submitted weights to node " + recipient_id)
 
 
-    def handle_weights_submission(self, node, data):
-        self.print_debug_messages("Received weights from " + node.id)
+    def handle_weights_submission(self, node_id, data):
+        self.print_debug_messages("Received weights from " + node_id)
 
         message = data
-        message["weights"]= {k: self.base64_to_tensor(v) for k, v in message["weights"].items()}
 
         if message["partial_weights"]:
-            self.partial_weights_queue.put((node.id, message))
+            self.partial_weights_queue.put((node_id, message))
         else:
-            self.weights_queue.put((node.id, message))
+            self.weights_queue.put((node_id, message))
 
 
     def aggregate_weights(self, local_state_dict, peers_weights):
@@ -437,30 +396,3 @@ class PeerNode (Node):
             
         self.hardware_tracker.phase_stop("aggregation")
         return aggregated_weights
-        
-
-    def iteration_ready(self, iteration):
-        self.state = RoundState.COMMUNICATION
-
-        message = {
-            "type": "iteration_ready",
-            "sender_id": self.id,
-            "timestamp": time.time(),
-            "iteration": iteration
-        }
-
-        for node in self.connected_peers:
-            self.send_to_node(node, message)
-            self.comm_tracker.record_sent(message)
-        
-        expected_ready_count = len(self.peer_list) - 1
-        ready_peers = []
-
-        while len(ready_peers) < expected_ready_count:
-            try:
-                message = self.ready_queue.get(timeout=60)
-                if message["iteration"] >= iteration and message["sender_id"] not in ready_peers:
-                    ready_peers.append(message["sender_id"])
-            except queue.Empty:
-                self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))
-                break
