@@ -151,12 +151,9 @@ class Node(threading.Thread):
         while not self.terminate_flag.is_set():
             try:
                 payload = self._recv_packet(conn)
-                if payload is None:
-                    self.print_debug_messages("Connection to node " + str(peer_id) + " closed.")
-                    break
-
-                message = pickle.loads(payload)
-                self.node_message(peer_id, message)
+                if payload is not None:
+                    message = pickle.loads(payload)
+                    self.node_message(peer_id, message)
 
             except (OSError, pickle.PickleError):
                 self.print_debug_messages("Failed to receive message from node " + str(peer_id) + ". Disconnecting.")

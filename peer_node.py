@@ -63,6 +63,7 @@ class PeerNode (Node):
         self.peers_weights = {} # iteration: {peer_id: weights}
 
         self.weights_queue = queue.Queue()
+        self.ready_queue = queue.Queue()
 
         self.logger = exp_logger
         self.comm_tracker = CommunicationTracker()
@@ -90,6 +91,10 @@ class PeerNode (Node):
 
             if data["type"] == "weights_submission":
                 self.handle_weights_submission(node_id, data)
+
+            elif data["type"] == "iteration_ready":
+                self.print_debug_messages("Received iteration ready from node " + str(data["sender_id"]) + " for iteration " + str(data["iteration"]))
+                self.ready_queue.put(data)
 
             elif data["type"] == "test_message":
                 self.print_debug_messages("Received test message: " + data["message"] + " from node " + str(data["sender_id"]) + " to node " + str(self.id))
@@ -120,8 +125,10 @@ class PeerNode (Node):
     
     def connect_with_peers(self):
         # Connect to all peers in the peer list
+        with self._lock:
+            peer_ids = list(self.connected_nodes.keys())
         for peer_id, peer_info in self.peer_list.items():
-            if peer_id != self.id and peer_id not in self.connected_nodes:
+            if peer_id != self.id and peer_id not in peer_ids:
                 self.connect_with_node(peer_info["host"], peer_info["port"])
                 self.print_debug_messages("Connected to Peer " + peer_id)
 
@@ -133,7 +140,9 @@ class PeerNode (Node):
             self.peer_list = response["peer_list"]
             self.last_seen_version = response["version"]
 
-            for peer_id in list(self.connected_nodes.keys()):
+            with self._lock:
+                peer_ids = list(self.connected_nodes.keys())
+            for peer_id in peer_ids:
                 if peer_id not in self.peer_list:
                     self.disconnect_with_node(peer_id)
                     self.print_debug_messages("Peer " + peer_id + " left, disconnected.")
@@ -229,10 +238,10 @@ class PeerNode (Node):
                     expected_partial_weights_count = len(self.peer_list) - 1 # excluding self
                     self.partial_weights[i] = {}
 
-                    self.comm_tracker.timer_start()
+                    self.comm_tracker.waiting_start()
                     while len(self.partial_weights[i]) < expected_partial_weights_count:
                         try:
-                            sender_id, message = self.partial_weights_queue.get(timeout=60)
+                            sender_id, message = self.partial_weights_queue.get(timeout=10)
                             if message["iteration"] == i:
                                 self.partial_weights[i][sender_id] = message["weights"]
                             elif message["iteration"] > i: # avoid re-queueing
@@ -241,7 +250,7 @@ class PeerNode (Node):
                         except queue.Empty:
                             self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                             break
-                    self.comm_tracker.timer_stop()
+                    self.comm_tracker.waiting_stop()
 
                     self.hardware_tracker.phase_start("secret_sharing_reconstruction")
                     aggregated_partial_weights = self.privacy_protocol.after_receive(self.partial_weights[i])
@@ -263,10 +272,10 @@ class PeerNode (Node):
                 expected_weights_count = len(self.peer_list) - 1 # excluding self
                 self.peers_weights[i] = {}
 
-                self.comm_tracker.timer_start()
+                self.comm_tracker.waiting_start()
                 while len(self.peers_weights[i]) < expected_weights_count:
                     try:
-                        sender_id, message = self.weights_queue.get(timeout=60)
+                        sender_id, message = self.weights_queue.get(timeout=10)
                         if message["iteration"] == i:
                             self.peers_weights[i][sender_id] = message["weights"]
                         elif message["iteration"] > i: # avoid re-queueing
@@ -275,7 +284,7 @@ class PeerNode (Node):
                     except queue.Empty:
                         self.print_debug_messages("Timeout waiting for weights, iteration " + str(i))
                         break
-                self.comm_tracker.timer_stop()
+                self.comm_tracker.waiting_stop()
 
                 # update local model with aggregated weights from peers
                 if i in self.peers_weights:
@@ -289,9 +298,7 @@ class PeerNode (Node):
 
                 self.print_debug_messages("Finished training iteration " + str(i))
 
-                self.comm_tracker.timer_start()
-                self.comm_tracker.timer_stop()
-
+                self.iteration_ready(i)
 
             total_val_losses = 0.0
             total_val_samples = 0
@@ -363,7 +370,9 @@ class PeerNode (Node):
         }
 
         if recipient_id is None:
-            for peer_id in self.connected_nodes.keys():
+            with self._lock:
+                    peer_ids = list(self.connected_nodes.keys())
+            for peer_id in peer_ids:
                 self.send_to_node(peer_id, message)
                 self.comm_tracker.record_sent(message)
                 self.print_debug_messages("Submitted weights to node " + peer_id)
@@ -396,3 +405,36 @@ class PeerNode (Node):
             
         self.hardware_tracker.phase_stop("aggregation")
         return aggregated_weights
+
+
+    def iteration_ready(self, iteration):
+        self.state = RoundState.COMMUNICATION
+
+        message = {
+            "type": "iteration_ready",
+            "sender_id": self.id,
+            "timestamp": time.time(),
+            "iteration": iteration
+        }
+
+        with self._lock:
+            peer_ids = list(self.connected_nodes.keys())
+        for peer_id in peer_ids:
+            self.comm_tracker.timer_start()
+            self.send_to_node(peer_id, message)
+            self.comm_tracker.timer_stop()
+            self.comm_tracker.record_sent(message)
+        
+        expected_ready_count = len(self.peer_list) - 1
+        ready_peers = []
+
+        self.comm_tracker.waiting_start()
+        while len(ready_peers) < expected_ready_count:
+            try:
+                message = self.ready_queue.get(timeout=10)
+                if message["iteration"] >= iteration and message["sender_id"] not in ready_peers:
+                    ready_peers.append(message["sender_id"])
+            except queue.Empty:
+                self.print_debug_messages("Timeout waiting for ready signals, iteration " + str(iteration))
+                break
+        self.comm_tracker.waiting_stop()
