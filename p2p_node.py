@@ -4,6 +4,8 @@ import threading
 import pickle
 from typing import Dict, Tuple
 
+HEADER_SIZE = 4 # bytes of the length prefix in front of every packet
+
 class Node(threading.Thread):
     def __init__(self, host, port, id, debug_message = False):
         super(Node, self).__init__()
@@ -153,7 +155,7 @@ class Node(threading.Thread):
                 payload = self._recv_packet(conn)
                 if payload is not None:
                     message = pickle.loads(payload)
-                    self.node_message(peer_id, message)
+                    self.node_message(peer_id, message, len(payload) + HEADER_SIZE)
 
             except (OSError, pickle.PickleError):
                 self.print_debug_messages("Failed to receive message from node " + str(peer_id) + ". Disconnecting.")
@@ -162,24 +164,25 @@ class Node(threading.Thread):
         self.disconnect_with_node(peer_id)
 
 
-    def send_to_node(self, peer_id: str, message):
+    def send_to_node(self, peer_id: str, message): # returns the number of bytes sent
         with self._lock:
             peer_conn = self.connected_nodes.get(peer_id)
         if peer_conn is None:
             self.print_debug_messages("Cannot send message to node " + str(peer_id) + " because it is not connected.")
             self._remove_connection(peer_id)
-            return
+            return 0
 
         conn, _ = peer_conn
         try:
-            self._send_packet(conn, message)
+            return self._send_packet(conn, message)
 
         except (OSError, pickle.PickleError):
             self.print_debug_messages("Failed to send message to node " + str(peer_id) + ". Disconnecting.")
             self.disconnect_with_node(peer_id)
+            return 0
 
 
-    def node_message(self, peer_id: str, message):
+    def node_message(self, peer_id: str, message, num_bytes: int = 0):
         pass  # Overridden in PeerNode
 
 
@@ -198,7 +201,7 @@ class Node(threading.Thread):
 
     @staticmethod
     def _recv_packet(conn: socket.socket):
-        header = Node._recv_bytes(conn, 4)
+        header = Node._recv_bytes(conn, HEADER_SIZE)
         if not header:
             return None
 
@@ -208,7 +211,9 @@ class Node(threading.Thread):
         return payload
 
     @staticmethod
-    def _send_packet(conn: socket.socket, packet):
+    def _send_packet(conn: socket.socket, packet): # returns the number of bytes sent
         payload = pickle.dumps(packet)
         header = struct.pack('!I', len(payload))
         conn.sendall(header + payload)
+
+        return len(header) + len(payload)

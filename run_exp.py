@@ -67,6 +67,8 @@ def parse_args():
                          help="Override the default model to train.")
     parser.add_argument("-d", "--dataset", type=str, default="MNIST",
                          help="Override the dataset name used for training.")
+    parser.add_argument("--partition", type=str, default=None, choices=["iid", "non_iid"],
+                         help="Override how the dataset is partitioned across the peers.")
 
     return parser.parse_args()
 
@@ -95,6 +97,8 @@ def main():
     elif chosen_model == "CNN" and chosen_dataset == "CIFAR10":
         model = CNN(10, 3, 4*4) 
 
+    chosen_partition = args.partition or cfg["partition"] or "iid"
+
     peer_node_kwargs = dict(
         host=host,
         port=port,
@@ -102,7 +106,8 @@ def main():
         dataset=chosen_dataset,
         exp_logger=exp_logger,
         id=node_id,
-        sync_every=5
+        sync_every=5,
+        partition_type=chosen_partition
     )
 
     if cfg["privacy_protocol"] == "AdditiveSecretSharing":

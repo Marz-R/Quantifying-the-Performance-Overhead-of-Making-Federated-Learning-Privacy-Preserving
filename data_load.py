@@ -40,6 +40,10 @@ def _get_dataset(dataset_name, batch_size, VALID_SPLIT, download=True):
 
 
 def load_data(dataset_name, peer_id, batch_size, VALID_SPLIT, partition_type="iid"):
+	if peer_id == "02": # local training
+		print(f"Loading {dataset_name} for Peer {peer_id}...")
+		train_loader, valid_loader = _get_dataset(dataset_name, batch_size, VALID_SPLIT)
+		return train_loader, valid_loader
 
 	print(f"Loading {dataset_name} and {partition_type} partitioning for Peer {peer_id}...")
 

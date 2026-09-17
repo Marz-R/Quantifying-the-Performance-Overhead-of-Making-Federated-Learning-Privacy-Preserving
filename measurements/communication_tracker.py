@@ -11,12 +11,13 @@ class CommunicationTracker:
         self.wait_time = 0.0
         self._wait_start_time = None
 
-    def record_sent(self, message: bytes):
-        self.bytes_sent += len(message)
+    def record_sent(self, num_bytes: int):
+        # num_bytes is the size of the serialised packet on the wire, header included
+        self.bytes_sent += num_bytes
         self.message_sent += 1
 
-    def record_received(self, message: bytes):
-        self.bytes_received += len(message)
+    def record_received(self, num_bytes: int):
+        self.bytes_received += num_bytes
         self.message_received += 1
 
     def timer_start(self):
