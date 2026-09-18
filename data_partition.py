@@ -26,28 +26,36 @@ def partition_iid(data_name, dataset, peer_list):
 	_to_json(peer_list, peer_indices, dataset_name=data_name, partition_type="iid")
 
 
-def partition_non_iid(data_name, dataset, peer_list):
+def partition_non_iid(data_name, dataset, peer_list, classes_per_peer=None):
 	# Get the label of every sample in the dataset
 	labels = _get_labels(dataset)
+	classes = labels.unique().tolist()
 	num_peers = len(peer_list)
+	num_classes = len(classes)
+
+	# default half of all classes per peer
+	if classes_per_peer is None:
+		classes_per_peer = num_classes // 2
+
+	class_holders = _deal_classes(classes, num_peers, classes_per_peer)
 
 	peer_indices = [[] for _ in range(num_peers)]
 
-	# Split every class on its own, so that all peers still hold all classes
-	for label in labels.unique().tolist():
+	# Split every class among the peers that hold it
+	for label, holders in class_holders.items():
 		class_indices = (labels == label).nonzero(as_tuple=True)[0]
 		num_class_samples = len(class_indices)
 
-		# +1 keeps every weight positive so that no peer ever loses a class entirely
-		weights = torch.tensor([(label % max(int(peer_id), 1)) + 1 for peer_id in peer_list], dtype=torch.float)
+		# Uneven shares by holder's position in list not id
+		weights = torch.tensor([((label + i) % num_peers) + 1 for i in holders], dtype=torch.float)
 
 		# Turn the weights into cutting points inside the class
 		boundaries = (weights.cumsum(0) / weights.sum() * num_class_samples).round().long()
 
 		# Hand each peer its slice of the class
 		start_idx = 0
-		for i in range(num_peers):
-			end_idx = boundaries[i].item()
+		for j, i in enumerate(holders):
+			end_idx = boundaries[j].item()
 			peer_indices[i].append(class_indices[start_idx:end_idx])
 			start_idx = end_idx
 
@@ -55,6 +63,26 @@ def partition_non_iid(data_name, dataset, peer_list):
 
 	_report(peer_list, peer_indices, labels, partition_type="non_iid")
 	_to_json(peer_list, peer_indices, dataset_name=data_name, partition_type="non_iid")
+
+
+def _deal_classes(classes, num_peers, classes_per_peer) -> dict:
+	num_classes = len(classes)
+	class_holders = {label: [] for label in classes}
+
+	# round-robin assignment of classes to peers
+	for i in range(num_peers):
+		start_class = round(i * num_classes / num_peers)
+		for j in range(classes_per_peer):
+			label = classes[(start_class + j) % num_classes]
+			if i not in class_holders[label]:
+				class_holders[label].append(i)
+
+	# All classes must have at least one holder
+	for label, holders in class_holders.items():
+		if not holders:
+			raise ValueError(f"Class {label} ended up on no peer, raise classes_per_peer")
+
+	return class_holders
 
 
 def _get_labels(dataset):
@@ -96,6 +124,8 @@ if __name__ == "__main__":
 						help="Partition scheme (default: iid)")
 	parser.add_argument("--peers", type=str, nargs="+", default=["03", "04", "05"],
 						help="Peer ids (default: 03 04 05)")
+	parser.add_argument("--classes-per-peer", type=int, default=None,
+						help="How many classes a peer holds ***non iid only*** (default: half of the classes)")
 	args = parser.parse_args()
 
 	dataset_name = args.dataset
@@ -108,4 +138,4 @@ if __name__ == "__main__":
 	if args.partition == "iid":
 		partition_iid(dataset_name, train_loader.dataset, peer_list)
 	else:
-		partition_non_iid(dataset_name, train_loader.dataset, peer_list)
+		partition_non_iid(dataset_name, train_loader.dataset, peer_list, args.classes_per_peer)
