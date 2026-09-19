@@ -1,45 +1,41 @@
 from privacy_protocol import PrivacyProtocol
 from secret_share import SecretShare
-import torch
+
 
 class AdditiveSecretSharing(PrivacyProtocol):
-    def __init__(self, peers_list):
-        self.secret_share = SecretShare()
-        self._shares = {}
+    def __init__(self, peers_list, multiplier=None, ring_bits=None, seed=None):
+        kwargs = {}
+        if multiplier is not None:
+            kwargs["multiplier"] = multiplier
+        if ring_bits is not None:
+            kwargs["ring_bits"] = ring_bits
+        if seed is not None:
+            kwargs["seed"] = seed
+
+        self.secret_share = SecretShare(**kwargs)
         self._num_peers = len(peers_list)
         self._peers_list = peers_list
 
 
     def before_send(self, weights: dict) -> dict:
-        # generate shares
-        total_shares = {}
-        for k, v in weights.items():
-            shares = self.secret_share.share(v, self._num_peers)
-            total_shares[k] = shares
+        shares = self.secret_share.share(weights, self._num_peers)
+        shares_dict = {}
+        for peer_id, share in zip(self._peers_list, shares):
+            shares_dict[peer_id] = share.cpu() # to cpu for sending
 
-        for i in range(self._num_peers):
-            peer_id = self._peers_list[i]
-            peer_shares = {k: total_shares[k][i] for k in total_shares.keys()}
-            self._shares[peer_id] = peer_shares
-
-        return self._shares
+        return shares_dict
 
 
-    def after_receive(self, weights: dict) -> dict:
-        # reconstruct weights from shares
-        reconstructed_weights = {}
-        partial_weights_lists = {}
-        for peer_id in weights.keys():
-            partial_weight = weights[peer_id]
-            for layer, value in partial_weight.items():
-                if layer not in partial_weights_lists:
-                    partial_weights_lists[layer] = []
-                partial_weights_lists[layer].append(value)
+    def after_receive(self, weights: dict):
+        # compute ring sum to give partial sum after phase 1
+        return self.secret_share.reconstruct(list(weights.values()))
 
-        for layer, shares in partial_weights_lists.items():
-            reconstructed_weights[layer] = self.secret_share.reconstruct(shares).to(dtype=torch.float32)
 
-        return reconstructed_weights
+    def aggregate(self, local_partial, peers_partials, local_state_dict) -> dict:
+        # compute partial sums to give final model after phase 2
+        ring_totals = [local_partial] + list(peers_partials)
+
+        return self.secret_share.average(ring_totals, local_state_dict)
 
 
     def update_peers_list(self, peers_list):

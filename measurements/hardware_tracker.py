@@ -4,6 +4,7 @@ import threading
 import numpy as np
 import os
 import time
+import torch
 
 class HardwareTracker:
     def __init__(self, sampling_interval: float = 0.5):
@@ -54,14 +55,23 @@ class HardwareTracker:
             self._thread.join(timeout=self.sampling_interval * 2)
 
 
+    @staticmethod
+    def _sync():
+        # to ensure phase time measurements doesnt shift bc CUDA kernels queue asynchronously
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+
     def phase_start(self, phase_name: str):
-        self._phase_start_time[phase_name] = time.time()
+        self._sync()
+        self._phase_start_time[phase_name] = time.perf_counter()
 
     def phase_stop(self, phase_name: str):
+        self._sync()
         start_time = self._phase_start_time.pop(phase_name, None)
         if start_time is not None:
             with self._lock:
-                elapsed_time = time.time() - start_time
+                elapsed_time = time.perf_counter() - start_time
                 if phase_name not in self.phase_time:
                     self.phase_time[phase_name] = 0.0
                 self.phase_time[phase_name] += elapsed_time
@@ -80,8 +90,8 @@ class HardwareTracker:
                 row[f"gpu{gpu_id}_mean (%)"] = np.mean(usage)
                 row[f"gpu{gpu_id}_max (%)"] = np.max(usage)
 
-            for phase, time in self.phase_time.items():
-                row[f"{phase}_time (sec)"] = time
+            for phase, elapsed_time in self.phase_time.items():
+                row[f"{phase}_time (sec)"] = elapsed_time
 
             self.cpu_usage = []
             self.memory_usage = []

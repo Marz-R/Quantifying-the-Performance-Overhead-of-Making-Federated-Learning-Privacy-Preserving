@@ -7,6 +7,6 @@ class PrivacyProtocol(ABC):
         pass
 
     @abstractmethod
-    def after_receive(self, weights: dict) -> dict:
+    def after_receive(self, weights: dict):
         # prepare received weights (encrypted with privacy protocols) before aggregation
         pass

@@ -6,6 +6,7 @@ data/
 run_exp1*
 run_exp2*
 run_exp3*
+*.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

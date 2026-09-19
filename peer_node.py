@@ -283,7 +283,6 @@ class PeerNode (Node):
         # and by (epoch, "end") for the sync closing the epoch
         self.iteration = iteration
 
-        # get model weights and save to history
         state_dict = self.model.state_dict()
 
         # encode weights and submit to peers
@@ -302,7 +301,7 @@ class PeerNode (Node):
             self.collect_weights(self.partial_weights_queue, self.partial_weights, iteration)
 
             if not self.partial_weights[iteration]:
-                # nobody is at this iteration, there is nothing to reconstruct
+                # nobody is at this iteration, nothing to reconstruct
                 self.print_debug_messages("No peer at iteration " + str(iteration) + ", skipping sync")
                 del self.partial_weights[iteration]
                 return
@@ -311,7 +310,7 @@ class PeerNode (Node):
             aggregated_partial_weights = self.privacy_protocol.after_receive(self.partial_weights[iteration])
             self.hardware_tracker.phase_stop("secret_sharing_reconstruction")
 
-            cpu_aggregated_partial_weights = {k: v.cpu().clone().detach() for k, v in aggregated_partial_weights.items()}
+            cpu_aggregated_partial_weights = aggregated_partial_weights.cpu()
             self.comm_tracker.timer_start()
             self.submit_weights(cpu_aggregated_partial_weights, False)
             self.comm_tracker.timer_stop()
@@ -329,11 +328,19 @@ class PeerNode (Node):
         # update local model with aggregated weights from peers
         peers_weights = self.peers_weights.pop(iteration, {}) # clear the weights for this iteration after aggregation
         if peers_weights: # no peer at this iteration means nothing to aggregate with
+
             self.print_debug_messages("Updating local model with weights from iteration " + str(iteration))
+
             if isinstance(self.privacy_protocol, AdditiveSecretSharing):
-                aggregated_weights = self.aggregate_weights(aggregated_partial_weights, peers_weights)
+
+                self.print_debug_messages("Aggregating...")
+                self.hardware_tracker.phase_start("aggregation")
+                aggregated_weights = self.privacy_protocol.aggregate(aggregated_partial_weights, peers_weights.values(), self.model.state_dict())
+                self.hardware_tracker.phase_stop("aggregation")
+
             else:
-                aggregated_weights = self.aggregate_weights(self.model.state_dict(), peers_weights)
+                aggregated_weights = self.aggregate_weights(self.model.state_dict(), peers_weights) # hardware tacker is inside the function
+
             self.model.load_state_dict(aggregated_weights)
 
 
@@ -350,15 +357,20 @@ class PeerNode (Node):
         while len(set(collected_weights[iteration]) | peers_ahead) < expected_weights_count:
             try:
                 sender_id, message = weights_queue.get(timeout=10)
+
                 if message["iteration"] == iteration:
                     collected_weights[iteration][sender_id] = message["weights"]
+
                 elif self._iteration_passed(message["iteration"], iteration): # avoid re-queueing
                     collected_weights.setdefault(message["iteration"], {})[sender_id] = message["weights"]
                     peers_ahead.add(sender_id)
+
                 self.print_debug_messages("Weights from node " + str(sender_id) + " for iteration " + str(iteration) + " have been processed.")
+
             except queue.Empty:
                 self.print_debug_messages("Timeout waiting for weights, iteration " + str(iteration))
                 break
+
         self.comm_tracker.waiting_stop()
 
 
