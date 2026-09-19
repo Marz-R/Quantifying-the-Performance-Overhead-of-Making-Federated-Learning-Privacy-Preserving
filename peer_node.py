@@ -14,6 +14,7 @@ from measurements.exp_logger import ExperimentLogger
 from measurements.communication_tracker import CommunicationTracker
 from measurements.hardware_tracker import HardwareTracker
 from privacy_adss import AdditiveSecretSharing
+from flat import Flat
 
 
 # Hyperparameters
@@ -75,6 +76,8 @@ class PeerNode (Node):
             self.partial_weights_queue = queue.Queue()
         else:
             self.privacy_protocol = None
+
+        self.flat_layout = None # cached state_dict layout for the plaintext path
 
         self.debug_message = debug_message
 
@@ -317,9 +320,13 @@ class PeerNode (Node):
             del self.partial_weights[iteration]
 
         else:
-            cpu_state_dict = {k: v.cpu().clone().detach() for k, v in state_dict.items()}
+            if self.flat_layout is None or not self.flat_layout.matches(state_dict):
+                self.flat_layout = Flat(state_dict)
+
+            # cheaper to send flat instead of the whole state_dict
+            cpu_flat_weights = self.flat_layout.flatten(state_dict, device, dtype=torch.float32).cpu()
             self.comm_tracker.timer_start()
-            self.submit_weights(cpu_state_dict, False)
+            self.submit_weights(cpu_flat_weights, False)
             self.comm_tracker.timer_stop()
 
         # collect weights from peers for current iteration before aggregation
@@ -430,11 +437,12 @@ class PeerNode (Node):
         self.print_debug_messages("Aggregating...")
         self.hardware_tracker.phase_start("aggregation")
 
-        all_weights = [local_state_dict] + list(peers_weights.values())
-        aggregated_weights = {}
+        # aggregating flats are cheaper
+        local_flat = self.flat_layout.flatten(local_state_dict, device, dtype=torch.float32)
+        all_flat = [local_flat] + [w.to(device=device, dtype=torch.float32) for w in peers_weights.values()]
 
-        for key in local_state_dict.keys():
-            aggregated_weights[key] = torch.stack([w[key].float().to(device) for w in all_weights]).mean(dim=0).detach().clone()
-            
+        mean_flat = torch.stack(all_flat).mean(dim=0)
+        aggregated_weights = self.flat_layout.unflatten(mean_flat, local_state_dict)
+
         self.hardware_tracker.phase_stop("aggregation")
         return aggregated_weights
